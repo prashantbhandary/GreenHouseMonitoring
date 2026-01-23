@@ -7,7 +7,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
-
+//prashntbhandari branch
 // DHT11 Sensor configuration
 #define DHTPIN 5          // Pin connected to DHT11 sensor
 #define DHTTYPE DHT11     // DHT 11
@@ -17,6 +17,7 @@
 #define TEMP_CHAR_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define HUMID_CHAR_UUID     "ceb5483e-36e1-4688-b7f5-ea07361b26a8"
 
+//address = "F4:65:0B:49:8F:66" 
 // OLED display width and height, in pixels
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
