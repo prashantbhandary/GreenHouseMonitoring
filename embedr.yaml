@@ -1,0 +1,52 @@
+manifest_version: 1
+name: GreenHouseMonitoring
+version: 0.1.0
+description: ESP32-based greenhouse monitoring system with sensor data collection and display capabilities.
+author: College Student
+board:
+  platform: espressif32
+  board: esp32dev
+  framework: arduino
+
+build:
+  upload_speed: 115200
+  monitor_speed: 115200
+  lib_deps:
+    - adafruit/Adafruit BusIO@^1.17.4
+
+project:
+  kind: firmware
+  language: c-cpp
+
+source:
+  entry: src/main.cpp
+  source_dirs:
+    - src
+  include_dirs:
+    - include
+  build_dir: build
+
+discovery:
+  detected_toolchain: platformio
+  provider: embedr-cli
+  confidence: 0.98
+  markers:
+    - platformio.ini
+    - src/main.cpp
+    - lib/Adafruit_Sensor
+    - lib/DHT-sensor-library
+    - lib/Adafruit_SSD1306
+    - lib/Adafruit-GFX-Library
+
+capabilities:
+  firmware:
+    enabled: true
+    provider: embedr-cli
+    target_id: esp32dev
+    environment: esp32dev
+    actions: {}
+  pcb:
+    enabled: false
+
+components: []
+connections: []

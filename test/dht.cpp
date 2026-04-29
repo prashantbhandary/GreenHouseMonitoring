@@ -25,6 +25,10 @@
 #define TEMP_CHAR_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define HUMID_CHAR_UUID     "ceb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define SOIL_MOIST_UUID     "d2c5483e-36e1-4688-b7f5-ea07361b26a8"
+
+#define HUMIDITY_THRESHOLD_UUID "a1b5483e-36e1-4688-b7f5-ea07361b26a8"
+#define SOIL_THRESHOLD_UUID "a2b5483e-36e1-4688-b7f5-ea07361b26a8"
+
 //address = "F4:65:0B:49:8F:66" 
 // OLED display width and height, in pixels
 #define SCREEN_WIDTH 128
@@ -42,12 +46,18 @@ BLEServer *pServer = NULL;
 BLECharacteristic *pTempCharacteristic = NULL;
 BLECharacteristic *pHumidCharacteristic = NULL;
 BLECharacteristic *pSoilMoistCharacteristic = NULL;
+BLECharacteristic *pHumidThresholdCharacteristic = NULL;
+BLECharacteristic *pSoilThresholdCharacteristic = NULL;
+
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
+float humidity_th =60;
+int soil_th = 2000;
 
 // BLE Server Callbacks
 class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
+    
+  void onConnect(BLEServer* pServer) {
       deviceConnected = true;
       Serial.println("BLE Client Connected");
     };
@@ -56,6 +66,7 @@ class MyServerCallbacks: public BLEServerCallbacks {
       deviceConnected = false;
       Serial.println("BLE Client Disconnected");
     }
+
 };
 
 void setup() {
@@ -146,7 +157,7 @@ void loop() {
   // Check if readings failed
   if (isnan(humidity) || isnan(temperature)) {
     Serial.println("Failed to read from DHT sensor!");
-    return;
+    //return;
   }
 
   // Print to Serial Monitor
@@ -169,7 +180,8 @@ void loop() {
   //   Serial.print(" (Wet)");
   // }
   Serial.print("  BLE: ");
-  Serial.println(deviceConnected ? "Connected" : "Disconnected");
+  //ternary operator to print BLE status
+  Serial.println(deviceConnected ? "Connected" : "Disconnected"); 
   // Send data via BLE if device is connected
   if (deviceConnected) {
     // Convert float to string and send via BLE
@@ -179,17 +191,22 @@ void loop() {
     dtostrf(temperature, 4, 1, tempString);
     dtostrf(humidity, 4, 1, humidString);
     dtostrf(soilMoistureValue, 4, 0, soilMoistString);
+
     pTempCharacteristic->setValue(tempString);
     pTempCharacteristic->notify();
+
     pHumidCharacteristic->setValue(humidString);
     pHumidCharacteristic->notify();
+
     pSoilMoistCharacteristic->setValue(soilMoistString);
     pSoilMoistCharacteristic->notify();
+
     Serial.println("Data sent via BLE");
   }
   // Handle BLE disconnection/reconnection
   if (!deviceConnected && oldDeviceConnected) {
     delay(500); // Give the bluetooth stack time to get ready
+    //advertise again
     pServer->startAdvertising();
     Serial.println("Start advertising");
     oldDeviceConnected = deviceConnected;
