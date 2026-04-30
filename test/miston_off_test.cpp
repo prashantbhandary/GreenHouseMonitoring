@@ -1,6 +1,6 @@
 #include <Arduino.h>
 
-const int MIST_PIN = 26;
+const int MIST_PIN = 32;
 
 // Change these 2 values as you want.
 const int ON_TIME_MS = 5000;

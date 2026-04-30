@@ -12,10 +12,9 @@
 #define DHTPIN 5      // Pin connected to DHT11 sensor
 #define DHTTYPE DHT11 // DHT 11
 
-//mist 26
-//motor 32
-#define MIST_PIN 18
-#define PUMP_PIN 19
+// Actuator pins
+#define MIST_PIN 26   // Mist maker/humidifier relay
+#define PUMP_PIN 32   // Water pump relay
 
 // OLED Display I2C pins (ESP32 default)
 // SDA = 21, SCL = 22
