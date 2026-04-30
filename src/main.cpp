@@ -14,7 +14,7 @@
 
 //mist 26
 //motor 32
-#define MIST_PIN 18
+#define MIST_PIN 26
 #define PUMP_PIN 19
 
 // OLED Display I2C pins (ESP32 default)
