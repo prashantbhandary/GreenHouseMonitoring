@@ -15,26 +15,35 @@
 // Actuator pins
 #define MIST_PIN 26   // Mist maker/humidifier relay
 #define PUMP_PIN 32   // Water pump relay
+
 // OLED Display I2C pins (ESP32 default)
 // SDA = 21, SCL = 22
 
 // Soil Moisture Sensor configuration
 #define SOIL_SENSOR_PIN 33 // Analog pin for soil moisture sensor
 
+// ============================================
 // BLE UUIDs
+// ============================================
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+
+// Sensor characteristics (READ + NOTIFY)
 #define TEMP_CHAR_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define HUMID_CHAR_UUID "ceb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define SOIL_MOIST_UUID "d2c5483e-36e1-4688-b7f5-ea07361b26a8"
 
-#define HUMIDITY_THRESHOLD_UUID "a1b5483e-36e1-4688-b7f5-ea07361b26a8"
-#define SOIL_THRESHOLD_UUID "a2b5483e-36e1-4688-b7f5-ea07361b26a8"
+// Control characteristics (READ + WRITE)
+#define MODE_CHAR_UUID "a1b5483e-36e1-4688-b7f5-ea07361b26a8"      // 0=auto, 1=manual
+#define MIST_CTRL_UUID "a2b5483e-36e1-4688-b7f5-ea07361b26a8"      // 0=off, 1=on (manual mode)
+#define PUMP_CTRL_UUID "a3b5483e-36e1-4688-b7f5-ea07361b26a8"      // 0=off, 1=on (manual mode)
+#define TEMP_THRESH_UUID "a4b5483e-36e1-4688-b7f5-ea07361b26a8"    // Temperature threshold
+#define SOIL_THRESH_UUID "a5b5483e-36e1-4688-b7f5-ea07361b26a8"    // Soil moisture threshold
 
 // OLED display configuration
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-#define OLED_RESET -1       // Reset pin # (or -1 if sharing Arduino reset pin)
-#define SCREEN_ADDRESS 0x3C // Common I2C address for 128x64 OLED
+#define OLED_RESET -1
+#define SCREEN_ADDRESS 0x3C
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 DHT dht(DHTPIN, DHTTYPE);
@@ -44,16 +53,98 @@ BLEServer *pServer = NULL;
 BLECharacteristic *pTempCharacteristic = NULL;
 BLECharacteristic *pHumidCharacteristic = NULL;
 BLECharacteristic *pSoilMoistCharacteristic = NULL;
-BLECharacteristic *pHumidThresholdCharacteristic = NULL;
-BLECharacteristic *pSoilThresholdCharacteristic = NULL;
+BLECharacteristic *pModeCharacteristic = NULL;
+BLECharacteristic *pMistCtrlCharacteristic = NULL;
+BLECharacteristic *pPumpCtrlCharacteristic = NULL;
+BLECharacteristic *pTempThreshCharacteristic = NULL;
+BLECharacteristic *pSoilThreshCharacteristic = NULL;
 
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 
-// Thresholds for automation
-float temperature_threshold = 30.0;  // Turn on mist if temp > 30°C
-float humidity_threshold = 60.0;     // Humidity threshold (for reference)
-int soil_threshold = 2500;           // Turn on pump if soil moisture > 2500 (dry soil = higher value)
+// ============================================
+// CONTROL VARIABLES
+// ============================================
+bool autoMode = true;               // true = automatic, false = manual
+bool mistManualOn = false;          // Manual mist state
+bool pumpManualOn = false;          // Manual pump state
+float temperature_threshold = 30.0; // Turn on mist if temp > threshold
+int soil_threshold = 2500;          // Turn on pump if soil > threshold (dry)
+
+// ============================================
+// BLE CALLBACKS FOR WRITEABLE CHARACTERISTICS
+// ============================================
+class ModeCallbacks : public BLECharacteristicCallbacks
+{
+    void onWrite(BLECharacteristic *pCharacteristic)
+    {
+        String value = pCharacteristic->getValue().c_str();
+        if (value.length() > 0)
+        {
+            int mode = value.toInt();
+            autoMode = (mode == 0); // 0 = auto, 1 = manual
+            Serial.print("Mode changed to: ");
+            Serial.println(autoMode ? "AUTO" : "MANUAL");
+        }
+    }
+};
+
+class MistCtrlCallbacks : public BLECharacteristicCallbacks
+{
+    void onWrite(BLECharacteristic *pCharacteristic)
+    {
+        String value = pCharacteristic->getValue().c_str();
+        if (value.length() > 0)
+        {
+            mistManualOn = (value.toInt() == 1);
+            Serial.print("Mist manual control: ");
+            Serial.println(mistManualOn ? "ON" : "OFF");
+        }
+    }
+};
+
+class PumpCtrlCallbacks : public BLECharacteristicCallbacks
+{
+    void onWrite(BLECharacteristic *pCharacteristic)
+    {
+        String value = pCharacteristic->getValue().c_str();
+        if (value.length() > 0)
+        {
+            pumpManualOn = (value.toInt() == 1);
+            Serial.print("Pump manual control: ");
+            Serial.println(pumpManualOn ? "ON" : "OFF");
+        }
+    }
+};
+
+class TempThreshCallbacks : public BLECharacteristicCallbacks
+{
+    void onWrite(BLECharacteristic *pCharacteristic)
+    {
+        String value = pCharacteristic->getValue().c_str();
+        if (value.length() > 0)
+        {
+            temperature_threshold = value.toFloat();
+            Serial.print("Temperature threshold set to: ");
+            Serial.print(temperature_threshold);
+            Serial.println(" C");
+        }
+    }
+};
+
+class SoilThreshCallbacks : public BLECharacteristicCallbacks
+{
+    void onWrite(BLECharacteristic *pCharacteristic)
+    {
+        String value = pCharacteristic->getValue().c_str();
+        if (value.length() > 0)
+        {
+            soil_threshold = value.toInt();
+            Serial.print("Soil threshold set to: ");
+            Serial.println(soil_threshold);
+        }
+    }
+};
 
 // BLE Server Callbacks
 class MyServerCallbacks : public BLEServerCallbacks
@@ -97,39 +188,59 @@ void setup()
     // Create BLE Service
     BLEService *pService = pServer->createService(SERVICE_UUID);
 
-    // Create BLE Characteristics for Temperature
+    // ============================================
+    // SENSOR CHARACTERISTICS (READ + NOTIFY)
+    // ============================================
     pTempCharacteristic = pService->createCharacteristic(
         TEMP_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
-    pTempCharacteristic->addDescriptor(new BLE2902()); // bug: cannot subscribe to updates
+    pTempCharacteristic->addDescriptor(new BLE2902());
 
-    // Create BLE Characteristics for Humidity
     pHumidCharacteristic = pService->createCharacteristic(
         HUMID_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
     pHumidCharacteristic->addDescriptor(new BLE2902());
 
-    // Create BLE Characteristics for Soil Moisture
     pSoilMoistCharacteristic = pService->createCharacteristic(
         SOIL_MOIST_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
     pSoilMoistCharacteristic->addDescriptor(new BLE2902());
 
-    // Start the service
+    // ============================================
+    // CONTROL CHARACTERISTICS (READ + WRITE)
+    // ============================================
+    pModeCharacteristic = pService->createCharacteristic(
+        MODE_CHAR_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+    pModeCharacteristic->setCallbacks(new ModeCallbacks());
 
-    /*
-    Activates the service you created earlier
-    Makes its characteristics (temperature, humidity, etc.) available to clients
-    Without this, even if a device connects, it cannot access your data
-    */
+    pMistCtrlCharacteristic = pService->createCharacteristic(
+        MIST_CTRL_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+    pMistCtrlCharacteristic->setCallbacks(new MistCtrlCallbacks());
+
+    pPumpCtrlCharacteristic = pService->createCharacteristic(
+        PUMP_CTRL_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+    pPumpCtrlCharacteristic->setCallbacks(new PumpCtrlCallbacks());
+
+    pTempThreshCharacteristic = pService->createCharacteristic(
+        TEMP_THRESH_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+    pTempThreshCharacteristic->setCallbacks(new TempThreshCallbacks());
+
+    pSoilThreshCharacteristic = pService->createCharacteristic(
+        SOIL_THRESH_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+    pSoilThreshCharacteristic->setCallbacks(new SoilThreshCallbacks());
+
+    // Start the service
     pService->start();
 
     // Start advertising
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID(SERVICE_UUID); // Helps clients filter/search
+    pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
-    // pAdvertising->setMinPreferred(0x06);
-    // pAdvertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
     Serial.println("BLE Advertising started. Device name: Greenhouse Monitor");
 
@@ -137,13 +248,11 @@ void setup()
     if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
     {
         Serial.println(F("SSD1306 allocation failed"));
-        for (;;); // Don't proceed, loop forever
+        for (;;);
     }
 
-    // Clear the buffer
-    display.clearDisplay();
-
     // Display startup message
+    display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
@@ -166,7 +275,7 @@ void loop()
     float temperature = dht.readTemperature();
 
     // Read soil moisture sensor
-    int soilMoistureValue = analogRead(SOIL_SENSOR_PIN); //direct reading
+    int soilMoistureValue = analogRead(SOIL_SENSOR_PIN);
 
     // Check if readings failed
     if (isnan(humidity) || isnan(temperature))
@@ -180,16 +289,16 @@ void loop()
         Serial.print(humidity);
         Serial.print("%  Temperature: ");
         Serial.print(temperature);
-        Serial.print("°C  ");
-        Serial.print("Soil Moisture: ");
+        Serial.print(" C  Soil: ");
         Serial.print(soilMoistureValue);
+        Serial.print("  Mode: ");
+        Serial.print(autoMode ? "AUTO" : "MANUAL");
         Serial.print("  BLE: ");
         Serial.println(deviceConnected ? "Connected" : "Disconnected");
 
-        // Send data via BLE if device is connected
+        // Send sensor data via BLE
         if (deviceConnected)
         {
-            // Convert float to string and send via BLE
             char tempString[8];
             char humidString[8];
             char soilMoistString[8];
@@ -206,20 +315,37 @@ void loop()
             pSoilMoistCharacteristic->setValue(soilMoistString);
             pSoilMoistCharacteristic->notify();
 
-            Serial.println("Data sent via BLE");
+            // Send current control values
+            char modeString[2];
+            char threshString[8];
+            
+            modeString[0] = autoMode ? '0' : '1';
+            modeString[1] = '\0';
+            pModeCharacteristic->setValue(modeString);
+
+            modeString[0] = mistManualOn ? '1' : '0';
+            pMistCtrlCharacteristic->setValue(modeString);
+
+            modeString[0] = pumpManualOn ? '1' : '0';
+            pPumpCtrlCharacteristic->setValue(modeString);
+
+            dtostrf(temperature_threshold, 4, 1, threshString);
+            pTempThreshCharacteristic->setValue(threshString);
+
+            dtostrf(soil_threshold, 4, 0, threshString);
+            pSoilThreshCharacteristic->setValue(threshString);
         }
     }
 
     // Handle BLE disconnection/reconnection
     if (!deviceConnected && oldDeviceConnected)
     {
-        delay(500); // Give the bluetooth stack time to get ready
+        delay(500);
         pServer->startAdvertising();
         Serial.println("Start advertising");
         oldDeviceConnected = deviceConnected;
     }
 
-    // Handle BLE connection
     if (deviceConnected && !oldDeviceConnected)
     {
         oldDeviceConnected = deviceConnected;
@@ -228,34 +354,67 @@ void loop()
     // ============================================
     // ACTUATOR CONTROL LOGIC
     // ============================================
-    
-    // MIST CONTROL: Turn on mist if temperature exceeds threshold
-    if (temperature > temperature_threshold)
+    bool mistOn = false;
+    bool pumpOn = false;
+
+    if (autoMode)
     {
-        digitalWrite(MIST_PIN, HIGH);
-        Serial.println("Mist ON - Temperature high");
+        // AUTOMATIC MODE - Control based on thresholds
+        if (temperature > temperature_threshold)
+        {
+            digitalWrite(MIST_PIN, HIGH);
+            mistOn = true;
+            Serial.println("Mist ON (Auto) - Temperature high");
+        }
+        else
+        {
+            digitalWrite(MIST_PIN, LOW);
+            mistOn = false;
+            Serial.println("Mist OFF (Auto) - Temperature normal");
+        }
+
+        if (soilMoistureValue > soil_threshold)
+        {
+            digitalWrite(PUMP_PIN, HIGH);
+            pumpOn = true;
+            Serial.println("Pump ON (Auto) - Soil dry");
+        }
+        else
+        {
+            digitalWrite(PUMP_PIN, LOW);
+            pumpOn = false;
+            Serial.println("Pump OFF (Auto) - Soil moist");
+        }
     }
     else
     {
-        digitalWrite(MIST_PIN, LOW);
-        Serial.println("Mist OFF - Temperature normal");
-    }
+        // MANUAL MODE - Control from dashboard
+        if (mistManualOn)
+        {
+            digitalWrite(MIST_PIN, HIGH);
+            mistOn = true;
+            Serial.println("Mist ON (Manual)");
+        }
+        else
+        {
+            digitalWrite(MIST_PIN, LOW);
+            mistOn = false;
+            Serial.println("Mist OFF (Manual)");
+        }
 
-    // PUMP CONTROL: Turn on pump if soil is dry (higher ADC value = drier soil)
-    if (soilMoistureValue > soil_threshold)
-    {
-        digitalWrite(PUMP_PIN, HIGH);
-        Serial.println("Pump ON - Soil dry");
+        if (pumpManualOn)
+        {
+            digitalWrite(PUMP_PIN, HIGH);
+            pumpOn = true;
+            Serial.println("Pump ON (Manual)");
+        }
+        else
+        {
+            digitalWrite(PUMP_PIN, LOW);
+            pumpOn = false;
+            Serial.println("Pump OFF (Manual)");
+        }
     }
-    else
-    {
-        digitalWrite(PUMP_PIN, LOW);
-        Serial.println("Pump OFF - Soil moist");
-    }
-
-    // Read actuator states for display
-    bool mistOn = digitalRead(MIST_PIN) == HIGH;
-    bool pumpOn = digitalRead(PUMP_PIN) == HIGH;
 
     // ============================================
     // UPDATE OLED DISPLAY
@@ -264,34 +423,34 @@ void loop()
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
-    
-    // Line 1: BLE status
-    display.print(F("BLE: "));
-    display.println(deviceConnected ? F("Connected") : F("Waiting..."));
-    display.println();
+
+    // Line 1: BLE and Mode status
+    display.print(F("BLE:"));
+    display.print(deviceConnected ? F("OK") : F("--"));
+    display.print(F(" Mode:"));
+    display.println(autoMode ? F("AUTO") : F("MAN"));
 
     // Sensor readings
-    display.print(F("Temp: "));
+    display.print(F("Temp:"));
     display.print(temperature, 1);
-    display.print(F("C "));
-    display.println(mistOn ? F("[MIST]") : F(""));
-    
-    display.print(F("Humidity: "));
-    display.print(humidity, 1);
-    display.println(F("%"));
-    
-    display.print(F("Soil: "));
-    display.print(soilMoistureValue);
-    display.print(F(" "));
-    display.println(pumpOn ? F("[PUMP]") : F(""));
+    display.print(F("C"));
+    display.println(mistOn ? F(" [M]") : F(""));
 
-    // Actuator status line
+    display.print(F("Hum:"));
+    display.print(humidity, 0);
+    display.print(F("% Soil:"));
+    display.println(pumpOn ? F("[P]") : F(""));
+
+    display.print(F("Soil:"));
+    display.print(soilMoistureValue);
+
+    // Thresholds
     display.println();
-    display.print(F("M:"));
-    display.print(mistOn ? F("ON") : F("off"));
-    display.print(F(" P:"));
-    display.println(pumpOn ? F("ON") : F("off"));
-    
+    display.print(F("T>"));
+    display.print((int)temperature_threshold);
+    display.print(F("C S>"));
+    display.print(soil_threshold);
+
     display.display();
 
     // Wait 2 seconds between measurements
