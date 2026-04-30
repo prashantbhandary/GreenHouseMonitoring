@@ -12,9 +12,11 @@
 #define DHTPIN 5      // Pin connected to DHT11 sensor
 #define DHTTYPE DHT11 // DHT 11
 
-// Actuator pins
-#define MIST_PIN 26   // Mist maker/humidifier relay
-#define PUMP_PIN 32   // Water pump relay
+//mist 26
+//motor 32
+#define MIST_PIN 18
+#define PUMP_PIN 19
+
 // OLED Display I2C pins (ESP32 default)
 // SDA = 21, SCL = 22
 
@@ -49,11 +51,8 @@ BLECharacteristic *pSoilThresholdCharacteristic = NULL;
 
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
-
-// Thresholds for automation
-float temperature_threshold = 30.0;  // Turn on mist if temp > 30°C
-float humidity_threshold = 60.0;     // Humidity threshold (for reference)
-int soil_threshold = 2500;           // Turn on pump if soil moisture > 2500 (dry soil = higher value)
+float humidity_threshold = 60;
+int soil_threshold = 2000;
 
 // BLE Server Callbacks
 class MyServerCallbacks : public BLEServerCallbacks
@@ -62,7 +61,7 @@ class MyServerCallbacks : public BLEServerCallbacks
     {
         deviceConnected = true;
         Serial.println("BLE Client Connected");
-    }
+    };
 
     void onDisconnect(BLEServer *pServer)
     {
@@ -225,73 +224,26 @@ void loop()
         oldDeviceConnected = deviceConnected;
     }
 
-    // ============================================
-    // ACTUATOR CONTROL LOGIC
-    // ============================================
-    
-    // MIST CONTROL: Turn on mist if temperature exceeds threshold
-    if (temperature > temperature_threshold)
-    {
-        digitalWrite(MIST_PIN, HIGH);
-        Serial.println("Mist ON - Temperature high");
-    }
-    else
-    {
-        digitalWrite(MIST_PIN, LOW);
-        Serial.println("Mist OFF - Temperature normal");
-    }
-
-    // PUMP CONTROL: Turn on pump if soil is dry (higher ADC value = drier soil)
-    if (soilMoistureValue > soil_threshold)
-    {
-        digitalWrite(PUMP_PIN, HIGH);
-        Serial.println("Pump ON - Soil dry");
-    }
-    else
-    {
-        digitalWrite(PUMP_PIN, LOW);
-        Serial.println("Pump OFF - Soil moist");
-    }
-
-    // Read actuator states for display
-    bool mistOn = digitalRead(MIST_PIN) == HIGH;
-    bool pumpOn = digitalRead(PUMP_PIN) == HIGH;
-
-    // ============================================
-    // UPDATE OLED DISPLAY
-    // ============================================
+    // Update OLED display with sensor data
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
-    
-    // Line 1: BLE status
     display.print(F("BLE: "));
     display.println(deviceConnected ? F("Connected") : F("Waiting..."));
     display.println();
 
-    // Sensor readings
+    display.setTextSize(1);
     display.print(F("Temp: "));
     display.print(temperature, 1);
-    display.print(F("C "));
-    display.println(mistOn ? F("[MIST]") : F(""));
-    
+    display.println(F("C"));
+
     display.print(F("Humidity: "));
     display.print(humidity, 1);
     display.println(F("%"));
-    
+
     display.print(F("Soil: "));
     display.print(soilMoistureValue);
-    display.print(F(" "));
-    display.println(pumpOn ? F("[PUMP]") : F(""));
-
-    // Actuator status line
-    display.println();
-    display.print(F("M:"));
-    display.print(mistOn ? F("ON") : F("off"));
-    display.print(F(" P:"));
-    display.println(pumpOn ? F("ON") : F("off"));
-    
     display.display();
 
     // Wait 2 seconds between measurements
