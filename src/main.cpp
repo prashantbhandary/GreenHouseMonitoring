@@ -240,9 +240,12 @@ void setup()
     // Start advertising
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
-    pAdvertising->setScanResponse(true);
+    pAdvertising->setScanResponse(false);
+    pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+    pAdvertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
     Serial.println("BLE Advertising started. Device name: Greenhouse Monitor");
+
 
     // Initialize the OLED display
     if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
@@ -340,15 +343,18 @@ void loop()
     // Handle BLE disconnection/reconnection
     if (!deviceConnected && oldDeviceConnected)
     {
-        delay(500);
-        pServer->startAdvertising();
-        Serial.println("Start advertising");
+        delay(500); // Give the bluetooth stack the chance to get ready
+        pServer->startAdvertising(); // restart advertising
+        Serial.println("BLE disconnected - restarting advertising");
         oldDeviceConnected = deviceConnected;
     }
 
+    // Handling the connection state change
     if (deviceConnected && !oldDeviceConnected)
     {
+        // Do stuff here on connecting
         oldDeviceConnected = deviceConnected;
+        Serial.println("BLE connection established");
     }
 
     // ============================================
