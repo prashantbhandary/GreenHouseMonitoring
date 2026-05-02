@@ -21,10 +21,14 @@
 // Soil Moisture Sensor configuration
 #define SOIL_SENSOR_PIN 33 // Analog pin for soil moisture sensor
 
+// Battery monitoring configuration
+#define BATTERY_ADC_PIN 34
+#define NUM_SAMPLES 2500
+#define VOLTAGE_STEP 0.0024898648648649
+
+// BLE UUIDs
 #define SERVICE_UUID "FFF0"
-// Sensor characteristics (READ + NOTIFY)
-#define SENSOR_CHAR_UUID "FFF1" // "temp,humid,soil" e.g. "24.5,60.0,2100"
-// Control characteristics (READ + WRITE)
+#define SENSOR_CHAR_UUID "FFF1" // "temp,humid,soil,batteryV" e.g. "24.5,60.0,2100,7.8"
 #define CTRL_CHAR_UUID "FFF4"   // "mode,mist,pump" e.g. "0,1,0"
 #define THRESH_CHAR_UUID "FFF7" // "tempThresh,soilThresh" e.g. "25.0,2500"
 
@@ -33,6 +37,9 @@
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 #define SCREEN_ADDRESS 0x3C
+
+// BLE notification interval (1 minute)
+#define BLE_NOTIFY_INTERVAL_MS 60000
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 DHT dht(DHTPIN, DHTTYPE);
@@ -46,6 +53,9 @@ BLECharacteristic *pThreshCharacteristic = NULL;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 
+// Timing variables
+unsigned long lastBleNotifyTime = 0;
+
 // ============================================
 // CONTROL VARIABLES
 // ============================================
@@ -55,34 +65,54 @@ bool pumpManualOn = false;          // Manual pump state
 float temperature_threshold = 25.0; // Turn on mist if temp > threshold
 int soil_threshold = 2500;          // Turn on pump if soil > threshold (dry)
 
+// Battery variables
+float batteryVoltage = 0.0;
+
+// ============================================
+// BATTERY FUNCTION
+// ============================================
+float readBatteryVoltage()
+{
+    unsigned long sum = 0;
+    for (int i = 0; i < NUM_SAMPLES; ++i)
+    {
+        sum += analogRead(BATTERY_ADC_PIN);
+    }
+    float avg_adc = (float)sum / (float)NUM_SAMPLES;
+    return avg_adc * VOLTAGE_STEP;
+}
+
 void startBleAdvertising()
 {
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
-    // pAdvertising->setScanResponse(true);
-    // pAdvertising->setMinPreferred(0x06);
-    // pAdvertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
 }
 
 void renderDisplay(float temperature, float humidity, int soilMoistureValue, bool mistOn, bool pumpOn)
 {
     display.clearDisplay();
-    display.setTextSize(1);
+    display.setTextSize(2); // Large font for better visibility
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
 
+    // Line 1: BLE status, Mode, Battery voltage
     display.print(F("BLE:"));
     display.print(deviceConnected ? F("OK") : F("--"));
     display.print(F(" "));
-    display.println(autoMode ? F("AUTO") : F("MAN"));
+    display.print(autoMode ? F("AUTO") : F("MAN"));
+    display.print(F(" "));
+    display.print(batteryVoltage, 1);
+    display.println(F("V"));
 
+    // Line 2: Temperature and Humidity
     display.print(F("T:"));
     display.print(temperature, 1);
     display.print(F("C  H:"));
     display.print(humidity, 0);
     display.println(F("%"));
 
+    // Line 3: Soil and Actuators
     display.print(F("S:"));
     display.print(soilMoistureValue);
     display.print(F("  M:"));
@@ -90,6 +120,7 @@ void renderDisplay(float temperature, float humidity, int soilMoistureValue, boo
     display.print(F(" P:"));
     display.println(pumpOn ? F("ON") : F("OFF"));
 
+    // Line 4: Thresholds
     display.print(F("Th T:"));
     display.print((int)temperature_threshold);
     display.print(F(" S:"));
@@ -97,6 +128,7 @@ void renderDisplay(float temperature, float humidity, int soilMoistureValue, boo
 
     display.display();
 }
+
 // BLE CALLBACKS FOR WRITEABLE CHARACTERISTICS
 class ControlCallbacks : public BLECharacteristicCallbacks
 {
@@ -122,6 +154,7 @@ class ControlCallbacks : public BLECharacteristicCallbacks
         }
     }
 };
+
 class ThreshCallbacks : public BLECharacteristicCallbacks
 {
     void onWrite(BLECharacteristic *pCharacteristic)
@@ -143,6 +176,7 @@ class ThreshCallbacks : public BLECharacteristicCallbacks
         }
     }
 };
+
 // BLE Server Callbacks
 class MyServerCallbacks : public BLEServerCallbacks
 {
@@ -164,8 +198,10 @@ void setup()
     Serial.begin(115200);
     delay(300);
     Serial.println("\nGreenhouse Monitor booting...");
+    
     dht.begin();
     pinMode(SOIL_SENSOR_PIN, INPUT);
+    pinMode(BATTERY_ADC_PIN, INPUT);
     pinMode(MIST_PIN, OUTPUT);
     pinMode(PUMP_PIN, OUTPUT);
     digitalWrite(MIST_PIN, LOW);
@@ -176,73 +212,93 @@ void setup()
     pServer->setCallbacks(new MyServerCallbacks());
 
     BLEService *pService = pServer->createService(SERVICE_UUID);
-    // Serial.println("BLE service FFF0 created");
 
     pSensorCharacteristic = pService->createCharacteristic(
         SENSOR_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
     pSensorCharacteristic->addDescriptor(new BLE2902());
-    pSensorCharacteristic->setValue("0.0,0.0,0");
-    // Serial.println("Char FFF1 (sensor) created");
+    pSensorCharacteristic->setValue("0.0,0.0,0,0.0");
 
     pControlCharacteristic = pService->createCharacteristic(
         CTRL_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
     pControlCharacteristic->setCallbacks(new ControlCallbacks());
     pControlCharacteristic->setValue("0,0,0");
-    // Serial.println("Char FFF4 (control) created");
+
     pThreshCharacteristic = pService->createCharacteristic(
         THRESH_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
     pThreshCharacteristic->setCallbacks(new ThreshCallbacks());
-    pThreshCharacteristic->setValue("30.0,2500");
-    // Serial.println("Char FFF7 (thresholds) created");
+    pThreshCharacteristic->setValue("25.0,2500");
+
     pService->start();
+    
     if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
     {
         Serial.println("OLED init failed");
         for (;;)
             ;
     }
+    
     startBleAdvertising();
+    
+    // Initial battery reading
+    batteryVoltage = readBatteryVoltage();
+    
     renderDisplay(0, 0, 0, false, false);
-    // Serial.println("Advertising Greenhouse Monitor...");
+    Serial.println("Greenhouse Monitor ready!");
     delay(2000);
 }
+
 void loop()
 {
+    unsigned long currentMillis = millis();
+    
     // Read temperature and humidity from DHT11 sensor
     float humidity = dht.readHumidity();
     float temperature = dht.readTemperature();
 
     // Read soil moisture sensor
     int soilMoistureValue = analogRead(SOIL_SENSOR_PIN);
+    
+    // Read battery voltage
+    batteryVoltage = readBatteryVoltage();
 
-    // Check if readings failed
-    if (deviceConnected)
+    // BLE notification every 1 minute
+    if (deviceConnected && (currentMillis - lastBleNotifyTime >= BLE_NOTIFY_INTERVAL_MS))
     {
-        char sensorString[24];
-        snprintf(sensorString, sizeof(sensorString), "%.1f,%.1f,%d",
+        lastBleNotifyTime = currentMillis;
+        
+        // Send sensor data: "temp,humid,soil,batteryV"
+        char sensorString[32];
+        snprintf(sensorString, sizeof(sensorString), "%.1f,%.1f,%d,%.1f",
                  temperature,
                  humidity,
-                 soilMoistureValue);
+                 soilMoistureValue,
+                 batteryVoltage);
         pSensorCharacteristic->setValue(sensorString);
         pSensorCharacteristic->notify();
-
+        
         // Send current control values
         char controlString[10];
-        char threshString[16];
-
         snprintf(controlString, sizeof(controlString), "%d,%d,%d",
                  autoMode ? 0 : 1,
                  mistManualOn ? 1 : 0,
                  pumpManualOn ? 1 : 0);
         pControlCharacteristic->setValue(controlString);
 
+        // Send threshold values
+        char threshString[16];
         snprintf(threshString, sizeof(threshString), "%.1f,%d",
                  temperature_threshold,
                  soil_threshold);
         pThreshCharacteristic->setValue(threshString);
+        
+        Serial.print("BLE notify: ");
+        Serial.print(sensorString);
+        Serial.print(" | Battery: ");
+        Serial.print(batteryVoltage, 2);
+        Serial.println("V");
     }
 
     // Handle BLE disconnection/reconnection
@@ -257,11 +313,14 @@ void loop()
     if (deviceConnected && !oldDeviceConnected)
     {
         oldDeviceConnected = deviceConnected;
+        lastBleNotifyTime = currentMillis; // Reset timer on new connection
         Serial.println("BLE connected");
     }
 
+    // Actuator control logic
     bool mistOn = false;
     bool pumpOn = false;
+    
     if (autoMode)
     {
         // AUTOMATIC MODE - Control based on thresholds
@@ -312,6 +371,9 @@ void loop()
             pumpOn = false;
         }
     }
+    
     renderDisplay(temperature, humidity, soilMoistureValue, mistOn, pumpOn);
-    delay(10000);
+    
+    // Short delay for display update (not for BLE timing)
+    delay(5000);
 }
