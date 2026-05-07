@@ -39,7 +39,7 @@
 #define SCREEN_ADDRESS 0x3C
 
 // BLE notification interval (1 minute)
-#define BLE_NOTIFY_INTERVAL_MS 60000
+#define BLE_NOTIFY_INTERVAL_MS 5000
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 DHT dht(DHTPIN, DHTTYPE);
