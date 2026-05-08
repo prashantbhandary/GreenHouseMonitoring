@@ -233,13 +233,15 @@ void setup()
 
     pControlCharacteristic = pService->createCharacteristic(
         CTRL_CHAR_UUID,
-        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
+    pControlCharacteristic->addDescriptor(new BLE2902());
     pControlCharacteristic->setCallbacks(new ControlCallbacks());
     pControlCharacteristic->setValue("0,0,0");
 
     pThreshCharacteristic = pService->createCharacteristic(
         THRESH_CHAR_UUID,
-        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
+    pThreshCharacteristic->addDescriptor(new BLE2902());
     pThreshCharacteristic->setCallbacks(new ThreshCallbacks());
     pThreshCharacteristic->setValue("21.0,40.0,2416");
 
@@ -312,6 +314,7 @@ void loop()
                  mistActual ? 1 : 0,
                  pumpActual ? 1 : 0);
         pControlCharacteristic->setValue(controlString);
+        pControlCharacteristic->notify();  // Notify the control values
 
         // Send threshold values
         char threshString[24];
@@ -320,6 +323,7 @@ void loop()
              humidity_threshold,
              soil_threshold);
         pThreshCharacteristic->setValue(threshString);
+        pThreshCharacteristic->notify();  // Notify the threshold values
         
         Serial.print("BLE notify: ");
         Serial.print(sensorString);
