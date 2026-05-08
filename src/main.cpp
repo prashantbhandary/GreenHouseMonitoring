@@ -291,12 +291,26 @@ void loop()
         pSensorCharacteristic->setValue(sensorString);
         pSensorCharacteristic->notify();
         
-        // Send current control values
+        // Send current control values: "mode,mist_actual,pump_actual"
+        // This sends the ACTUAL state of the actuators, not just manual commands
+        bool mistActual = false;
+        bool pumpActual = false;
+        
+        if (autoMode) {
+            // In AUTO mode, actuators are controlled by thresholds
+            mistActual = (temperature > temperature_threshold);
+            pumpActual = (soilMoistureValue > soil_threshold);
+        } else {
+            // In MANUAL mode, actuators are controlled by dashboard
+            mistActual = mistManualOn;
+            pumpActual = pumpManualOn;
+        }
+        
         char controlString[10];
         snprintf(controlString, sizeof(controlString), "%d,%d,%d",
                  autoMode ? 0 : 1,
-                 mistManualOn ? 1 : 0,
-                 pumpManualOn ? 1 : 0);
+                 mistActual ? 1 : 0,
+                 pumpActual ? 1 : 0);
         pControlCharacteristic->setValue(controlString);
 
         // Send threshold values
@@ -309,6 +323,8 @@ void loop()
         
         Serial.print("BLE notify: ");
         Serial.print(sensorString);
+        Serial.print(" | Control: ");
+        Serial.print(controlString);
         Serial.print(" | Battery: ");
         Serial.print(batteryVoltage, 2);
         Serial.println("V");
