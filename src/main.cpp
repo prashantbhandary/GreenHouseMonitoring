@@ -300,7 +300,8 @@ void loop()
         
         if (autoMode) {
             // In AUTO mode, actuators are controlled by thresholds
-            mistActual = (temperature > temperature_threshold);
+            // Mist turns ON if temp > threshold OR humidity < threshold
+            mistActual = (temperature > temperature_threshold || humidity < humidity_threshold);
             pumpActual = (soilMoistureValue > soil_threshold);
         } else {
             // In MANUAL mode, actuators are controlled by dashboard
