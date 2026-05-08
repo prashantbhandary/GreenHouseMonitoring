@@ -7,6 +7,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <math.h>
 #include <stdio.h>
 
 // DHT11 Sensor configuration
@@ -24,6 +25,7 @@
 // Battery monitoring configuration
 #define BATTERY_ADC_PIN 34
 #define NUM_SAMPLES 2500
+#define DHT_AVG_SAMPLES 5
 #define VOLTAGE_STEP 0.0024898648648649
 
 // BLE UUIDs
@@ -68,6 +70,15 @@ int soil_threshold = 2416;           // Turn on pump if soil > threshold (dry)
 
 // Battery variables
 float batteryVoltage = 0.0;
+float temperatureAverage = 0.0;
+float humidityAverage = 0.0;
+
+float dhtTempSamples[DHT_AVG_SAMPLES] = {0.0};
+float dhtHumiditySamples[DHT_AVG_SAMPLES] = {0.0};
+int dhtSampleIndex = 0;
+int dhtSampleCount = 0;
+float dhtTempSum = 0.0;
+float dhtHumiditySum = 0.0;
 
 // ============================================
 // BATTERY FUNCTION
@@ -81,6 +92,47 @@ float readBatteryVoltage()
     }
     float avg_adc = (float)sum / (float)NUM_SAMPLES;
     return avg_adc * VOLTAGE_STEP;
+}
+
+int readSoilMoistureAverage()
+{
+    unsigned long sum = 0;
+    for (int i = 0; i < NUM_SAMPLES; ++i)
+    {
+        sum += analogRead(SOIL_SENSOR_PIN);
+    }
+    return (int)((float)sum / (float)NUM_SAMPLES);
+}
+
+bool updateDhtAverages(float temperature, float humidity, float &avgTemperature, float &avgHumidity)
+{
+    if (isnan(temperature) || isnan(humidity))
+    {
+        return false;
+    }
+
+    if (dhtSampleCount < DHT_AVG_SAMPLES)
+    {
+        dhtTempSamples[dhtSampleIndex] = temperature;
+        dhtHumiditySamples[dhtSampleIndex] = humidity;
+        dhtTempSum += temperature;
+        dhtHumiditySum += humidity;
+        dhtSampleCount++;
+    }
+    else
+    {
+        dhtTempSum -= dhtTempSamples[dhtSampleIndex];
+        dhtHumiditySum -= dhtHumiditySamples[dhtSampleIndex];
+        dhtTempSamples[dhtSampleIndex] = temperature;
+        dhtHumiditySamples[dhtSampleIndex] = humidity;
+        dhtTempSum += temperature;
+        dhtHumiditySum += humidity;
+    }
+
+    dhtSampleIndex = (dhtSampleIndex + 1) % DHT_AVG_SAMPLES;
+    avgTemperature = dhtTempSum / (float)dhtSampleCount;
+    avgHumidity = dhtHumiditySum / (float)dhtSampleCount;
+    return true;
 }
 
 void startBleAdvertising()
@@ -269,11 +321,14 @@ void loop()
     unsigned long currentMillis = millis();
     
     // Read temperature and humidity from DHT11 sensor
-    float humidity = dht.readHumidity();
-    float temperature = dht.readTemperature();
+    float humidityRaw = dht.readHumidity();
+    float temperatureRaw = dht.readTemperature();
+    updateDhtAverages(temperatureRaw, humidityRaw, temperatureAverage, humidityAverage);
+    float humidity = humidityAverage;
+    float temperature = temperatureAverage;
 
     // Read soil moisture sensor
-    int soilMoistureValue = analogRead(SOIL_SENSOR_PIN);
+    int soilMoistureValue = readSoilMoistureAverage();
     
     // Read battery voltage
     batteryVoltage = readBatteryVoltage();

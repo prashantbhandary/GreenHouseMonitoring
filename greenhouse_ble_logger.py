@@ -189,7 +189,7 @@ async def handle_notifications(client: BleakClient, state: Dict[str, Optional[st
             return
         state["temperature"], state["humidity"], state["soil_moisture"], state["battery_voltage"] = parsed
         logging.info("Receiving sensor data")
-        log_row(state, csv_path)
+        log_row(state, csv_path)  # Only log when sensor data arrives
         print_live_data(state)
 
     def on_control(_, data: bytearray) -> None:
@@ -199,7 +199,7 @@ async def handle_notifications(client: BleakClient, state: Dict[str, Optional[st
             return
         state["mode"], state["mist_status"], state["pump_status"] = parsed
         logging.info("Receiving control data")
-        log_row(state, csv_path)
+        # Don't log here - just update state
         print_live_data(state)
 
     def on_threshold(_, data: bytearray) -> None:
@@ -213,7 +213,7 @@ async def handle_notifications(client: BleakClient, state: Dict[str, Optional[st
             state["soil_threshold"],
         ) = parsed
         logging.info("Receiving threshold data")
-        log_row(state, csv_path)
+        # Don't log here - just update state
         print_live_data(state)
 
     try:
