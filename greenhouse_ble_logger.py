@@ -1,23 +1,34 @@
 #!/usr/bin/env python3
-"""BLE data logger for the ESP32 greenhouse monitor."""
+"""Unified BLE logger and control for the ESP32 greenhouse monitor.
+
+This script maintains a single BLE connection and provides:
+- Continuous data logging to CSV
+- Live threshold and mode changes via keyboard commands
+- Real-time sensor display
+
+Only ONE instance can connect to the ESP32 at a time.
+"""
 
 import asyncio
 import csv
 import logging
 import os
+import sys
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 
 from bleak import BleakClient, BleakScanner
 
 
+# BLE Configuration
 DEVICE_NAME = "Greenhouse Monitor system"
 SERVICE_UUID = "FFF0"
 CHAR_SENSOR = "FFF1"
 CHAR_CONTROL = "FFF4"
 CHAR_THRESHOLD = "FFF7"
-CSV_FILE = "greenhouse_complete_log.csv"
 
+# Logging Configuration
+CSV_FILE = "greenhouse_complete_log.csv"
 POLL_INTERVAL_SECONDS = 5.0
 RECONNECT_DELAY_SECONDS = 2.0
 
@@ -134,12 +145,33 @@ def default_state() -> Dict[str, Optional[str]]:
     }
 
 
+def print_menu() -> None:
+    """Print the interactive control menu."""
+    print("\n" + "=" * 60)
+    print("GREENHOUSE MONITOR - Unified Logger & Control")
+    print("=" * 60)
+    print("Commands:")
+    print("  1 - Set temperature threshold (mist ON when temp > threshold)")
+    print("  2 - Set humidity threshold (mist ON when humidity < threshold)")
+    print("  3 - Set soil moisture threshold (pump ON when soil > threshold)")
+    print("  4 - Set ALL thresholds at once")
+    print("  5 - Switch to AUTO mode (threshold-based control)")
+    print("  6 - Switch to MANUAL mode")
+    print("  7 - Turn mist ON/OFF (manual mode)")
+    print("  8 - Turn pump ON/OFF (manual mode)")
+    print("  s - Show current status")
+    print("  h - Show this help menu")
+    print("  q - Quit")
+    print("=" * 60)
+
+
 async def find_device() -> Optional[str]:
     """Scan and return the BLE address for the greenhouse monitor."""
     logging.info("Scanning for BLE device")
     devices = await BleakScanner.discover()
     for device in devices:
         if device.name == DEVICE_NAME:
+            logging.info(f"Found device: {device.name} ({device.address})")
             return device.address
     return None
 
@@ -154,28 +186,75 @@ async def read_characteristic(client: BleakClient, uuid: str) -> Optional[str]:
         return None
 
 
+async def write_characteristic(client: BleakClient, uuid: str, value: str) -> bool:
+    """Write a string value to a characteristic."""
+    try:
+        await client.write_gatt_char(uuid, value.encode("utf-8"))
+        logging.info("Wrote to %s: %s", uuid, value)
+        return True
+    except Exception as exc:
+        logging.warning("Failed to write %s: %s", uuid, exc)
+        return False
+
+
+async def set_thresholds(client: BleakClient, temp_thresh: float, humid_thresh: float, 
+                         soil_thresh: int, state: Dict[str, Optional[str]]) -> bool:
+    """Set temperature, humidity, and soil moisture thresholds."""
+    value = f"{temp_thresh:.1f},{humid_thresh:.1f},{soil_thresh}"
+    success = await write_characteristic(client, CHAR_THRESHOLD, value)
+    if success:
+        # Update local state immediately for display
+        state["temperature_threshold"] = f"{temp_thresh:.1f}"
+        state["humidity_threshold"] = f"{humid_thresh:.1f}"
+        state["soil_threshold"] = str(soil_thresh)
+        logging.info(f"Thresholds updated: T={temp_thresh}°C, H={humid_thresh}%, S={soil_thresh}")
+    return success
+
+
+async def set_control(client: BleakClient, mode: int, mist: int, pump: int,
+                      state: Dict[str, Optional[str]]) -> bool:
+    """Set control mode and manual actuator states."""
+    value = f"{mode},{mist},{pump}"
+    success = await write_characteristic(client, CHAR_CONTROL, value)
+    if success:
+        # Update local state immediately for display
+        state["mode"] = str(mode)
+        state["mist_status"] = str(mist)
+        state["pump_status"] = str(pump)
+        mode_str = "AUTO" if mode == 0 else "MANUAL"
+        logging.info(f"Control updated: Mode={mode_str}, Mist={mist}, Pump={pump}")
+    return success
+
+
 async def poll_characteristics(client: BleakClient, state: Dict[str, Optional[str]],
                                csv_path: str) -> None:
     """Periodically poll control and threshold characteristics."""
     while client.is_connected:
-        control = await read_characteristic(client, CHAR_CONTROL)
-        if control:
-            parsed = parse_control_payload(control)
-            if parsed:
-                state["mode"], state["mist_status"], state["pump_status"] = parsed
-                logging.info("Receiving control data")
+        try:
+            control = await read_characteristic(client, CHAR_CONTROL)
+            if control:
+                parsed = parse_control_payload(control)
+                if parsed:
+                    state["mode"], state["mist_status"], state["pump_status"] = parsed
+                    logging.debug("Polled control data: %s", control)
 
-        threshold = await read_characteristic(client, CHAR_THRESHOLD)
-        if threshold:
-            parsed = parse_threshold_payload(threshold)
-            if parsed:
-                (
-                    state["temperature_threshold"],
-                    state["humidity_threshold"],
-                    state["soil_threshold"],
-                ) = parsed
-                logging.info("Receiving threshold data")
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            threshold = await read_characteristic(client, CHAR_THRESHOLD)
+            if threshold:
+                parsed = parse_threshold_payload(threshold)
+                if parsed:
+                    (
+                        state["temperature_threshold"],
+                        state["humidity_threshold"],
+                        state["soil_threshold"],
+                    ) = parsed
+                    logging.debug("Polled threshold data: %s", threshold)
+            
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logging.warning("Poll error: %s", exc)
+            await asyncio.sleep(1.0)
 
 
 async def handle_notifications(client: BleakClient, state: Dict[str, Optional[str]],
@@ -199,7 +278,6 @@ async def handle_notifications(client: BleakClient, state: Dict[str, Optional[st
             return
         state["mode"], state["mist_status"], state["pump_status"] = parsed
         logging.info("Receiving control data")
-        # Don't log here - just update state
         print_live_data(state)
 
     def on_threshold(_, data: bytearray) -> None:
@@ -213,7 +291,6 @@ async def handle_notifications(client: BleakClient, state: Dict[str, Optional[st
             state["soil_threshold"],
         ) = parsed
         logging.info("Receiving threshold data")
-        # Don't log here - just update state
         print_live_data(state)
 
     try:
@@ -232,47 +309,184 @@ async def handle_notifications(client: BleakClient, state: Dict[str, Optional[st
         logging.warning("Threshold notifications unavailable: %s", exc)
 
 
-async def connect_and_stream(csv_path: str) -> None:
-    """Connect to the device, subscribe, and keep logging until disconnect."""
-    state = default_state()
+async def read_user_input(loop: asyncio.AbstractEventLoop) -> str:
+    """Read user input asynchronously."""
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+    return await reader.readline()
 
+
+async def handle_user_commands(client: BleakClient, state: Dict[str, Optional[str]]) -> None:
+    """Handle interactive keyboard commands while connected."""
+    loop = asyncio.get_event_loop()
+    
+    # Current threshold values (local cache)
+    temp_thresh = 25.0
+    humid_thresh = 40.0
+    soil_thresh = 2500
+    
+    print_menu()
+    
+    while client.is_connected:
+        try:
+            # Use asyncio.to_thread for blocking input
+            raw_line = await asyncio.to_thread(input, "\nEnter command (h for help): ")
+            choice = raw_line.strip().lower()
+            
+            if choice == 'q':
+                logging.info("Quit requested by user")
+                print("Disconnecting...")
+                break
+            
+            elif choice == 'h':
+                print_menu()
+            
+            elif choice == 's':
+                print("\n--- Current Status ---")
+                print(f"Temperature: {state.get('temperature', 'N/A')} °C")
+                print(f"Humidity: {state.get('humidity', 'N/A')} %")
+                print(f"Soil Moisture: {state.get('soil_moisture', 'N/A')}")
+                print(f"Battery: {state.get('battery_voltage', 'N/A')} V")
+                print(f"Mode: {'AUTO' if state.get('mode') == '0' else 'MANUAL' if state.get('mode') == '1' else 'N/A'}")
+                print(f"Mist: {'ON' if state.get('mist_status') == '1' else 'OFF'}")
+                print(f"Pump: {'ON' if state.get('pump_status') == '1' else 'OFF'}")
+                print(f"Temp Threshold: {state.get('temperature_threshold', 'N/A')} °C")
+                print(f"Humid Threshold: {state.get('humidity_threshold', 'N/A')} %")
+                print(f"Soil Threshold: {state.get('soil_threshold', 'N/A')}")
+                print("----------------------")
+            
+            elif choice == '1':
+                try:
+                    val = input(f"Enter temperature threshold °C (current: {temp_thresh}): ")
+                    temp_thresh = float(val)
+                    await set_thresholds(client, temp_thresh, humid_thresh, soil_thresh, state)
+                except ValueError:
+                    print("Invalid number!")
+            
+            elif choice == '2':
+                try:
+                    val = input(f"Enter humidity threshold % (current: {humid_thresh}): ")
+                    humid_thresh = float(val)
+                    await set_thresholds(client, temp_thresh, humid_thresh, soil_thresh, state)
+                except ValueError:
+                    print("Invalid number!")
+            
+            elif choice == '3':
+                try:
+                    val = input(f"Enter soil moisture threshold (current: {soil_thresh}): ")
+                    soil_thresh = int(val)
+                    await set_thresholds(client, temp_thresh, humid_thresh, soil_thresh, state)
+                except ValueError:
+                    print("Invalid number!")
+            
+            elif choice == '4':
+                try:
+                    temp_thresh = float(input("Enter temperature threshold °C: "))
+                    humid_thresh = float(input("Enter humidity threshold %: "))
+                    soil_thresh = int(input("Enter soil moisture threshold: "))
+                    await set_thresholds(client, temp_thresh, humid_thresh, soil_thresh, state)
+                except ValueError:
+                    print("Invalid number!")
+            
+            elif choice == '5':
+                await set_control(client, 0, 0, 0, state)
+                print("Switched to AUTO mode")
+            
+            elif choice == '6':
+                await set_control(client, 1, 0, 0, state)
+                print("Switched to MANUAL mode (actuators OFF)")
+            
+            elif choice == '7':
+                val = input("Turn mist ON or OFF? (on/off): ").strip().lower()
+                if val == 'on':
+                    await set_control(client, 1, 1, int(state.get("pump_status", 0)), state)
+                    print("Mist turned ON (MANUAL mode)")
+                elif val == 'off':
+                    await set_control(client, 1, 0, int(state.get("pump_status", 0)), state)
+                    print("Mist turned OFF (MANUAL mode)")
+                else:
+                    print("Invalid input! Use 'on' or 'off'")
+            
+            elif choice == '8':
+                val = input("Turn pump ON or OFF? (on/off): ").strip().lower()
+                if val == 'on':
+                    await set_control(client, 1, int(state.get("mist_status", 0)), 1, state)
+                    print("Pump turned ON (MANUAL mode)")
+                elif val == 'off':
+                    await set_control(client, 1, int(state.get("mist_status", 0)), 0, state)
+                    print("Pump turned OFF (MANUAL mode)")
+                else:
+                    print("Invalid input! Use 'on' or 'off'")
+            
+            else:
+                print("Unknown command! Press 'h' for help.")
+        
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logging.warning("Input handling error: %s", exc)
+
+
+async def connect_and_run(csv_path: str) -> None:
+    """Connect to the device and run both logging and interactive control."""
+    state = default_state()
+    
     while True:
         try:
             address = await find_device()
             if not address:
-                logging.info("Device not found, rescanning soon")
+                logging.info("Device not found, rescanning in %ss", RECONNECT_DELAY_SECONDS)
                 await asyncio.sleep(RECONNECT_DELAY_SECONDS)
                 continue
-
+            
             logging.info("Connecting to %s", address)
             async with BleakClient(address) as client:
                 if not client.is_connected:
                     logging.warning("Connection failed, retrying")
                     await asyncio.sleep(RECONNECT_DELAY_SECONDS)
                     continue
-
-                logging.info("Connected")
-
+                
+                logging.info("✓ Connected! Ready for commands...")
+                print("\n" + "=" * 60)
+                print("CONNECTED to Greenhouse Monitor")
+                print("Logging to:", CSV_FILE)
+                print("=" * 60)
+                
+                # Start notification handler
                 notify_task = asyncio.create_task(
                     handle_notifications(client, state, csv_path)
                 )
+                
+                # Start polling task (for characteristics that don't notify)
                 poll_task = asyncio.create_task(
                     poll_characteristics(client, state, csv_path)
                 )
-
-                while client.is_connected:
-                    await asyncio.sleep(1.0)
-
-                logging.warning("Disconnect event detected")
+                
+                # Run user command handler (blocking until quit or disconnect)
+                await handle_user_commands(client, state)
+                
+                # Clean up tasks
                 notify_task.cancel()
                 poll_task.cancel()
-
+                
+                try:
+                    await asyncio.gather(notify_task, poll_task, return_exceptions=True)
+                except asyncio.CancelledError:
+                    pass
+                
+                # Check if user requested quit
+                if not client.is_connected:
+                    logging.info("User disconnected")
+                    return
+        
         except asyncio.CancelledError:
-            raise
+            logging.info("Shutdown requested")
+            return
         except Exception as exc:
-            logging.warning("Unexpected error, reconnecting: %s", exc)
-
-        logging.info("Reconnecting")
+            logging.warning("Unexpected error: %s", exc)
+        
+        logging.info("Reconnecting in %ss", RECONNECT_DELAY_SECONDS)
         await asyncio.sleep(RECONNECT_DELAY_SECONDS)
 
 
@@ -280,8 +494,9 @@ async def main() -> None:
     """Entry point."""
     setup_logging()
     ensure_csv_exists(CSV_FILE)
-    logging.info("Starting BLE greenhouse logger")
-    await connect_and_stream(CSV_FILE)
+    logging.info("Starting unified BLE greenhouse logger & control")
+    logging.info("CSV file: %s", CSV_FILE)
+    await connect_and_run(CSV_FILE)
 
 
 if __name__ == "__main__":
