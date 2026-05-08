@@ -30,7 +30,7 @@
 #define SERVICE_UUID "FFF0"
 #define SENSOR_CHAR_UUID "FFF1" // "temp,humid,soil,batteryV" e.g. "24.5,60.0,2100,7.8"
 #define CTRL_CHAR_UUID "FFF4"   // "mode,mist,pump" e.g. "0,1,0"
-#define THRESH_CHAR_UUID "FFF7" // "tempThresh,humidThresh,soilThresh" e.g. "15.0,40.0,2416"
+#define THRESH_CHAR_UUID "FFF7" // "tempThresh,humidThresh,soilThresh" e.g. "21.0,40.0,2416"
 
 // OLED display configuration
 #define SCREEN_WIDTH 128
@@ -62,7 +62,7 @@ unsigned long lastBleNotifyTime = 0;
 bool autoMode = true;                // true = automatic, false = manual
 bool mistManualOn = false;           // Manual mist state
 bool pumpManualOn = false;           // Manual pump state
-float temperature_threshold = 15.0;  // Turn on mist if temp < threshold
+float temperature_threshold = 21.0;  // Turn on mist if temp > threshold
 float humidity_threshold = 40.0;     // Turn on mist if humidity < threshold
 int soil_threshold = 2416;           // Turn on pump if soil > threshold (dry)
 
@@ -100,33 +100,38 @@ void renderDisplay(float temperature, float humidity, int soilMoistureValue, boo
     // Line 1: BLE status, Mode, Battery voltage
     display.print(F("BLE:"));
     display.print(deviceConnected ? F("OK") : F("--"));
-    display.print(F(" "));
+    display.print(F("  "));
     display.print(autoMode ? F("AUTO") : F("MAN"));
-    display.print(F(" "));
+    display.print(F("  "));
     display.print(batteryVoltage, 1);
     display.println(F("V"));
 
     // Line 2: Temperature and Humidity
     display.print(F("T:"));
     display.print(temperature, 1);
-    display.print(F("C  H:"));
+    display.print(F("C  "));
+    display.print(F("H:"));
     display.print(humidity, 0);
     display.println(F("%"));
 
     // Line 3: Soil and Actuators
     display.print(F("S:"));
     display.print(soilMoistureValue);
-    display.print(F("  M:"));
+    display.print(F("  "));
+    display.print(F("M:"));
     display.print(mistOn ? F("ON") : F("OFF"));
-    display.print(F(" P:"));
+    display.print(F("  "));
+    display.print(F("P:"));
     display.println(pumpOn ? F("ON") : F("OFF"));
 
     // Line 4: Thresholds
     display.print(F("Th T:"));
     display.print((int)temperature_threshold);
-    display.print(F(" H:"));
+    display.print(F("  "));
+    display.print(F("H:"));
     display.print((int)humidity_threshold);
-    display.print(F(" S:"));
+    display.print(F("  "));
+    display.print(F("S:"));
     display.print(soil_threshold);
 
     display.display();
@@ -236,7 +241,7 @@ void setup()
         THRESH_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
     pThreshCharacteristic->setCallbacks(new ThreshCallbacks());
-    pThreshCharacteristic->setValue("15.0,40.0,2416");
+    pThreshCharacteristic->setValue("21.0,40.0,2416");
 
     pService->start();
     
@@ -332,7 +337,7 @@ void loop()
     if (autoMode)
     {
         // AUTOMATIC MODE - Control based on thresholds
-        if (temperature < temperature_threshold || humidity < humidity_threshold)
+        if (temperature > temperature_threshold || humidity < humidity_threshold)
         {
             digitalWrite(MIST_PIN, HIGH);
             mistOn = true;
