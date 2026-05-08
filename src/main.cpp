@@ -30,7 +30,7 @@
 #define SERVICE_UUID "FFF0"
 #define SENSOR_CHAR_UUID "FFF1" // "temp,humid,soil,batteryV" e.g. "24.5,60.0,2100,7.8"
 #define CTRL_CHAR_UUID "FFF4"   // "mode,mist,pump" e.g. "0,1,0"
-#define THRESH_CHAR_UUID "FFF7" // "tempThresh,soilThresh" e.g. "25.0,2500"
+#define THRESH_CHAR_UUID "FFF7" // "tempThresh,humidThresh,soilThresh" e.g. "15.0,40.0,2416"
 
 // OLED display configuration
 #define SCREEN_WIDTH 128
@@ -59,11 +59,12 @@ unsigned long lastBleNotifyTime = 0;
 // ============================================
 // CONTROL VARIABLES
 // ============================================
-bool autoMode = true;               // true = automatic, false = manual
-bool mistManualOn = false;          // Manual mist state
-bool pumpManualOn = false;          // Manual pump state
-float temperature_threshold = 25.0; // Turn on mist if temp > threshold
-int soil_threshold = 2500;          // Turn on pump if soil > threshold (dry)
+bool autoMode = true;                // true = automatic, false = manual
+bool mistManualOn = false;           // Manual mist state
+bool pumpManualOn = false;           // Manual pump state
+float temperature_threshold = 15.0;  // Turn on mist if temp < threshold
+float humidity_threshold = 40.0;     // Turn on mist if humidity < threshold
+int soil_threshold = 2416;           // Turn on pump if soil > threshold (dry)
 
 // Battery variables
 float batteryVoltage = 0.0;
@@ -92,7 +93,7 @@ void startBleAdvertising()
 void renderDisplay(float temperature, float humidity, int soilMoistureValue, bool mistOn, bool pumpOn)
 {
     display.clearDisplay();
-    display.setTextSize(2); // Large font for better visibility
+    display.setTextSize(1); // Large font for better visibility
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
 
@@ -123,6 +124,8 @@ void renderDisplay(float temperature, float humidity, int soilMoistureValue, boo
     // Line 4: Thresholds
     display.print(F("Th T:"));
     display.print((int)temperature_threshold);
+    display.print(F(" H:"));
+    display.print((int)humidity_threshold);
     display.print(F(" S:"));
     display.print(soil_threshold);
 
@@ -164,14 +167,18 @@ class ThreshCallbacks : public BLECharacteristicCallbacks
             return;
 
         float tempThresh = temperature_threshold;
+        float humidThresh = humidity_threshold;
         int soilThresh = soil_threshold;
-        if (sscanf(value.c_str(), "%f,%d", &tempThresh, &soilThresh) == 2)
+        if (sscanf(value.c_str(), "%f,%f,%d", &tempThresh, &humidThresh, &soilThresh) == 3)
         {
             temperature_threshold = tempThresh;
+            humidity_threshold = humidThresh;
             soil_threshold = soilThresh;
             Serial.print("Thresholds updated: T=");
             Serial.print(temperature_threshold);
-            Serial.print(" C, S=");
+            Serial.print(" C, H=");
+            Serial.print(humidity_threshold);
+            Serial.print(" %, S=");
             Serial.println(soil_threshold);
         }
     }
@@ -229,7 +236,7 @@ void setup()
         THRESH_CHAR_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
     pThreshCharacteristic->setCallbacks(new ThreshCallbacks());
-    pThreshCharacteristic->setValue("25.0,2500");
+    pThreshCharacteristic->setValue("15.0,40.0,2416");
 
     pService->start();
     
@@ -288,10 +295,11 @@ void loop()
         pControlCharacteristic->setValue(controlString);
 
         // Send threshold values
-        char threshString[16];
-        snprintf(threshString, sizeof(threshString), "%.1f,%d",
-                 temperature_threshold,
-                 soil_threshold);
+        char threshString[24];
+        snprintf(threshString, sizeof(threshString), "%.1f,%.1f,%d",
+             temperature_threshold,
+             humidity_threshold,
+             soil_threshold);
         pThreshCharacteristic->setValue(threshString);
         
         Serial.print("BLE notify: ");
@@ -324,7 +332,7 @@ void loop()
     if (autoMode)
     {
         // AUTOMATIC MODE - Control based on thresholds
-        if (temperature > temperature_threshold)
+        if (temperature < temperature_threshold || humidity < humidity_threshold)
         {
             digitalWrite(MIST_PIN, HIGH);
             mistOn = true;

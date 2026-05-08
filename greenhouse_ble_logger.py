@@ -31,6 +31,7 @@ CSV_COLUMNS = [
     "mist_status",
     "pump_status",
     "temperature_threshold",
+    "humidity_threshold",
     "soil_threshold",
 ]
 
@@ -69,12 +70,12 @@ def parse_control_payload(payload: str) -> Optional[Tuple[str, str, str]]:
     return parts[0], parts[1], parts[2]
 
 
-def parse_threshold_payload(payload: str) -> Optional[Tuple[str, str]]:
-    """Parse temperature and soil thresholds."""
+def parse_threshold_payload(payload: str) -> Optional[Tuple[str, str, str]]:
+    """Parse temperature, humidity, and soil thresholds."""
     parts = [p.strip() for p in payload.split(",")]
-    if len(parts) != 2:
+    if len(parts) != 3:
         return None
-    return parts[0], parts[1]
+    return parts[0], parts[1], parts[2]
 
 
 def utc_timestamp() -> str:
@@ -94,6 +95,7 @@ def log_row(state: Dict[str, Optional[str]], csv_path: str) -> None:
         state.get("mist_status"),
         state.get("pump_status"),
         state.get("temperature_threshold"),
+        state.get("humidity_threshold"),
         state.get("soil_threshold"),
     ]
 
@@ -111,7 +113,7 @@ def print_live_data(state: Dict[str, Optional[str]]) -> None:
         "Temp: {temperature} C | Hum: {humidity} % | Soil: {soil_moisture} | "
         "Batt: {battery_voltage} V | Mode: {mode} | Mist: {mist_status} | "
         "Pump: {pump_status} | TThresh: {temperature_threshold} | "
-        "SThresh: {soil_threshold}"
+        "HThresh: {humidity_threshold} | SThresh: {soil_threshold}"
     ).format(**state)
     logging.info(line)
 
@@ -127,6 +129,7 @@ def default_state() -> Dict[str, Optional[str]]:
         "mist_status": None,
         "pump_status": None,
         "temperature_threshold": None,
+        "humidity_threshold": None,
         "soil_threshold": None,
     }
 
@@ -166,7 +169,11 @@ async def poll_characteristics(client: BleakClient, state: Dict[str, Optional[st
         if threshold:
             parsed = parse_threshold_payload(threshold)
             if parsed:
-                state["temperature_threshold"], state["soil_threshold"] = parsed
+                (
+                    state["temperature_threshold"],
+                    state["humidity_threshold"],
+                    state["soil_threshold"],
+                ) = parsed
                 logging.info("Receiving threshold data")
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
@@ -200,7 +207,11 @@ async def handle_notifications(client: BleakClient, state: Dict[str, Optional[st
         parsed = parse_threshold_payload(payload)
         if not parsed:
             return
-        state["temperature_threshold"], state["soil_threshold"] = parsed
+        (
+            state["temperature_threshold"],
+            state["humidity_threshold"],
+            state["soil_threshold"],
+        ) = parsed
         logging.info("Receiving threshold data")
         log_row(state, csv_path)
         print_live_data(state)
