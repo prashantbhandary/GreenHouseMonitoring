@@ -63,13 +63,15 @@ unsigned long lastBleNotifyTime = 0;
 // ============================================
 // CONTROL VARIABLES
 // ============================================
-bool autoMode = true;                // true = automatic, false = manual
-bool mistManualOn = false;           // Manual mist state
-bool pumpManualOn = false;           // Manual pump state
-float temperature_threshold = 25.0;  // Turn on mist if temp < threshold (cooling)
-float humidity_low_threshold = 40.0; // Turn ON mist if humidity < this
-float humidity_high_threshold = 80.0; // Turn OFF mist if humidity > this
-int soil_threshold = 2416;           // Turn on pump if soil > threshold (dry)
+bool autoMode = true;                  // true = automatic, false = manual
+bool mistManualOn = false;             // Manual mist state
+bool pumpManualOn = false;             // Manual pump state
+float temp_high_threshold = 27.0;      // Mist ON if temp > this (cooling)
+float temp_low_threshold = 21.0;       // Optional: Mist OFF if temp < this
+float humidity_low_threshold = 50.0;   // Mist ON if humidity < this
+float humidity_high_threshold = 70.0;  // Mist OFF if humidity > this
+int soil_threshold = 2416;             // Pump ON if soil > this (dry)
+bool mistCurrentlyOn = false;          // Track mist state for hysteresis
 
 // Battery variables
 float batteryVoltage = 0.0;
@@ -179,12 +181,12 @@ void renderDisplay(float temperature, float humidity, int soilMoistureValue, boo
     display.print(F("P:"));
     display.println(pumpOn ? F("ON") : F("OFF"));
 
-    // Line 4: Thresholds
-    display.print(F("Th T<"));
-    display.print((int)temperature_threshold);
+    // Line 4: Thresholds - T>27=ON, H<50=ON, H>70=OFF
+    display.print(F("T>"));
+    display.print((int)temp_high_threshold);
     display.print(F(" H<"));
     display.print((int)humidity_low_threshold);
-    display.print(F("-"));
+    display.print(F("H>"));
     display.print((int)humidity_high_threshold);
 
     display.display();
@@ -224,33 +226,33 @@ class ThreshCallbacks : public BLECharacteristicCallbacks
         if (value.length() == 0)
             return;
 
-        float tempThresh = temperature_threshold;
+        float tempThresh = temp_high_threshold;
         float humidLowThresh = humidity_low_threshold;
         float humidHighThresh = humidity_high_threshold;
         int soilThresh = soil_threshold;
         
-        // Parse: "tempThresh,humidLowThresh,humidHighThresh,soilThresh"
-        // Or legacy format: "tempThresh,humidThresh,soilThresh" (uses same value for both humidity thresholds)
+        // Parse: "tempHighThresh,humidLowThresh,humidHighThresh,soilThresh"
+        // Format: "27,50,70,2416" -> temp>27=ON, H<50=ON, H>70=OFF
         int parsed = sscanf(value.c_str(), "%f,%f,%f,%d", &tempThresh, &humidLowThresh, &humidHighThresh, &soilThresh);
         
         if (parsed >= 3)
         {
-            temperature_threshold = tempThresh;
+            temp_high_threshold = tempThresh;
             humidity_low_threshold = humidLowThresh;
             if (parsed == 4) {
+                humidity_high_threshold = humidHighThresh;
                 soil_threshold = soilThresh;
             } else if (parsed == 3) {
-                // Legacy format: third value is soil threshold
-                soil_threshold = (int)humidHighThresh;
-                humidity_high_threshold = humidLowThresh + 40.0; // Default high = low + 40
+                // Legacy format: third value is humidity high threshold
+                humidity_high_threshold = humidHighThresh;
             }
-            Serial.print("Thresholds updated: T<");
-            Serial.print(temperature_threshold);
-            Serial.print("C, H<");
+            Serial.print("Thresholds: T>");
+            Serial.print(temp_high_threshold);
+            Serial.print("C=ON, H<");
             Serial.print(humidity_low_threshold);
-            Serial.print("%, H>");
+            Serial.print("%=ON, H>");
             Serial.print(humidity_high_threshold);
-            Serial.print("%, S>");
+            Serial.print("%=OFF, S>");
             Serial.println(soil_threshold);
         }
     }
@@ -283,17 +285,17 @@ void setup()
     pinMode(SOIL_SENSOR_PIN, INPUT);
     pinMode(BATTERY_ADC_PIN, INPUT);
     
-    // CRITICAL: Initialize actuator pins with EXPLICIT OFF state
-    // Many relay modules are ACTIVE-LOW (ON when signal is LOW)
-    // Set HIGH first to ensure OFF, then configure as output
-    digitalWrite(MIST_PIN, HIGH);  // Assumes active-LOW relay
-    digitalWrite(PUMP_PIN, HIGH);  // Assumes active-LOW relay
+    // CRITICAL: Initialize MOSFET pins with EXPLICIT OFF state
+    // N-channel MOSFET: Gate LOW = OFF, Gate HIGH = ON
+    // Set LOW first to ensure OFF, then configure as output
+    digitalWrite(MIST_PIN, LOW);   // MOSFET OFF
+    digitalWrite(PUMP_PIN, LOW);   // MOSFET OFF
     pinMode(MIST_PIN, OUTPUT);
     pinMode(PUMP_PIN, OUTPUT);
     
-    // Small delay to let relays settle
+    // Small delay to let MOSFETs settle
     delay(100);
-    Serial.println("Actuators initialized OFF (active-LOW relay assumed)");
+    Serial.println("MOSFETs initialized OFF (N-channel, active-HIGH)");
 
     BLEDevice::init("Greenhouse Monitor system");
     pServer = BLEDevice::createServer();
@@ -319,7 +321,7 @@ void setup()
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
     pThreshCharacteristic->addDescriptor(new BLE2902());
     pThreshCharacteristic->setCallbacks(new ThreshCallbacks());
-    pThreshCharacteristic->setValue("25.0,40.0,80.0,2416");  // temp,humidLow,humidHigh,soil
+    pThreshCharacteristic->setValue("27.0,50.0,70.0,2416");  // tempHigh,humidLow,humidHigh,soil
 
     pService->start();
     
@@ -382,7 +384,7 @@ void loop()
             // NEW LOGIC:
             // Mist ON if: temp < threshold (cooling) OR humidity < low_threshold
             // Mist OFF if: humidity > high_threshold (80%)
-            bool mistShouldBeOn = (temperature < temperature_threshold) || (humidity < humidity_low_threshold);
+            bool mistShouldBeOn = (temperature > temp_high_threshold) || (humidity < humidity_low_threshold);
             // But turn OFF if humidity is too high (above 80%)
             if (humidity > humidity_high_threshold) {
                 mistShouldBeOn = false;
@@ -406,7 +408,7 @@ void loop()
         // Send threshold values: "tempThresh,humidLowThresh,humidHighThresh,soilThresh"
         char threshString[32];
         snprintf(threshString, sizeof(threshString), "%.1f,%.1f,%.1f,%d",
-             temperature_threshold,
+             temp_high_threshold,
              humidity_low_threshold,
              humidity_high_threshold,
              soil_threshold);
@@ -448,7 +450,7 @@ void loop()
         // NEW LOGIC:
         // Mist ON if: temp < threshold (cooling) OR humidity < low_threshold
         // Mist OFF if: humidity > high_threshold (80%)
-        bool mistShouldBeOn = (temperature < temperature_threshold) || (humidity < humidity_low_threshold);
+        bool mistShouldBeOn = (temperature > temp_high_threshold) || (humidity < humidity_low_threshold);
         // But turn OFF if humidity is too high (above 80%)
         if (humidity > humidity_high_threshold) {
             mistShouldBeOn = false;
@@ -456,24 +458,24 @@ void loop()
         
         if (mistShouldBeOn)
         {
-            digitalWrite(MIST_PIN, LOW);  // Active-LOW relay: LOW = ON
+            digitalWrite(MIST_PIN, HIGH);  // N-channel MOSFET: HIGH = ON
             mistOn = true;
             Serial.println("MIST ON (temp < threshold OR humidity < low, and humidity not too high)");
         }
         else
         {
-            digitalWrite(MIST_PIN, HIGH);  // Active-LOW relay: HIGH = OFF
+            digitalWrite(MIST_PIN, LOW);   // N-channel MOSFET: LOW = OFF
             mistOn = false;
         }
 
         if (soilMoistureValue > soil_threshold)
         {
-            digitalWrite(PUMP_PIN, LOW);  // Active-LOW relay: LOW = ON
+            digitalWrite(PUMP_PIN, HIGH);  // N-channel MOSFET: HIGH = ON
             pumpOn = true;
         }
         else
         {
-            digitalWrite(PUMP_PIN, HIGH);  // Active-LOW relay: HIGH = OFF
+            digitalWrite(PUMP_PIN, LOW);   // N-channel MOSFET: LOW = OFF
             pumpOn = false;
         }
     }
@@ -482,23 +484,23 @@ void loop()
         // MANUAL MODE - Control from dashboard
         if (mistManualOn)
         {
-            digitalWrite(MIST_PIN, LOW);  // Active-LOW relay: LOW = ON
+            digitalWrite(MIST_PIN, HIGH);  // N-channel MOSFET: HIGH = ON
             mistOn = true;
         }
         else
         {
-            digitalWrite(MIST_PIN, HIGH);  // Active-LOW relay: HIGH = OFF
+            digitalWrite(MIST_PIN, LOW);   // N-channel MOSFET: LOW = OFF
             mistOn = false;
         }
 
         if (pumpManualOn)
         {
-            digitalWrite(PUMP_PIN, LOW);  // Active-LOW relay: LOW = ON
+            digitalWrite(PUMP_PIN, HIGH);  // N-channel MOSFET: HIGH = ON
             pumpOn = true;
         }
         else
         {
-            digitalWrite(PUMP_PIN, HIGH);  // Active-LOW relay: HIGH = OFF
+            digitalWrite(PUMP_PIN, LOW);   // N-channel MOSFET: LOW = OFF
             pumpOn = false;
         }
     }
