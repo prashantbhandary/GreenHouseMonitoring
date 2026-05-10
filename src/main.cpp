@@ -40,8 +40,11 @@
 #define OLED_RESET -1
 #define SCREEN_ADDRESS 0x3C
 
-// BLE notification interval (1 minute)
+// BLE notification interval (5 seconds for better data collection)
 #define BLE_NOTIFY_INTERVAL_MS 5000
+
+// Data logging interval (5 seconds)
+#define DATA_LOG_INTERVAL_MS 5000
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 DHT dht(DHTPIN, DHTTYPE);
@@ -57,9 +60,8 @@ bool oldDeviceConnected = false;
 
 // Timing variables
 unsigned long lastBleNotifyTime = 0;
+unsigned long lastDataLogTime = 0;
 
-// ============================================
-// CONTROL VARIABLES
 // ============================================
 // CONTROL VARIABLES
 // ============================================
@@ -72,6 +74,11 @@ float humidity_low_threshold = 50.0;   // Mist ON if humidity < this
 float humidity_high_threshold = 70.0;  // Mist OFF if humidity > this
 int soil_threshold = 2416;             // Pump ON if soil > this (dry)
 bool mistCurrentlyOn = false;          // Track mist state for hysteresis
+
+// Session tracking
+int sessionCounter = 0;
+unsigned long sessionStartTime = 0;
+bool sessionActive = false;
 
 // Battery variables
 float batteryVoltage = 0.0;
@@ -150,7 +157,7 @@ void startBleAdvertising()
 void renderDisplay(float temperature, float humidity, int soilMoistureValue, bool mistOn, bool pumpOn)
 {
     display.clearDisplay();
-    display.setTextSize(1); // Large font for better visibility
+    display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
 
@@ -181,7 +188,7 @@ void renderDisplay(float temperature, float humidity, int soilMoistureValue, boo
     display.print(F("P:"));
     display.println(pumpOn ? F("ON") : F("OFF"));
 
-    // Line 4: Thresholds - T>27=ON, H<50=ON, H>70=OFF
+    // Line 4: Thresholds
     display.print(F("T>"));
     display.print((int)temp_high_threshold);
     display.print(F(" H<"));
@@ -190,6 +197,87 @@ void renderDisplay(float temperature, float humidity, int soilMoistureValue, boo
     display.print((int)humidity_high_threshold);
 
     display.display();
+}
+
+// ============================================
+// DATA LOGGING FUNCTION
+// ============================================
+void logDataToSerial(float temperature, float humidity, int soilMoistureValue, bool mistOn, bool pumpOn)
+{
+    // Output CSV format: timestamp,temp,humidity,soil,battery,mode,mist,pump
+    // Mode: 0 = AUTO, 1 = MANUAL
+    
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastDataLogTime >= DATA_LOG_INTERVAL_MS)
+    {
+        lastDataLogTime = currentMillis;
+        
+        // Session header
+        if (!sessionActive)
+        {
+            sessionActive = true;
+            sessionStartTime = currentMillis;
+            sessionCounter++;
+            
+            Serial.println("\n========================================");
+            Serial.print("SESSION #");
+            Serial.print(sessionCounter);
+            Serial.print(" STARTED - ");
+            Serial.println(autoMode ? "AUTO MODE" : "MANUAL MODE");
+            Serial.println("========================================");
+            Serial.println("timestamp,temperature,humidity,soil_moisture,battery_voltage,mode,mist_status,pump_status");
+        }
+        
+        // Format: HH:MM:SS
+        unsigned long elapsedSec = (currentMillis - sessionStartTime) / 1000;
+        int hours = elapsedSec / 3600;
+        int minutes = (elapsedSec % 3600) / 60;
+        int seconds = elapsedSec % 60;
+        
+        char timeStr[20];
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, seconds);
+        
+        // CSV output
+        Serial.print(timeStr);
+        Serial.print(",");
+        Serial.print(temperature, 1);
+        Serial.print(",");
+        Serial.print(humidity, 1);
+        Serial.print(",");
+        Serial.print(soilMoistureValue);
+        Serial.print(",");
+        Serial.print(batteryVoltage, 1);
+        Serial.print(",");
+        Serial.print(autoMode ? "0" : "1");
+        Serial.print(",");
+        Serial.print(mistOn ? "1" : "0");
+        Serial.print(",");
+        Serial.println(pumpOn ? "1" : "0");
+    }
+}
+
+void printSessionSummary()
+{
+    if (sessionActive)
+    {
+        unsigned long elapsedSec = (millis() - sessionStartTime) / 1000;
+        
+        Serial.println("\n========================================");
+        Serial.print("SESSION #");
+        Serial.print(sessionCounter);
+        Serial.print(" SUMMARY - ");
+        Serial.println(autoMode ? "AUTO MODE" : "MANUAL MODE");
+        Serial.println("========================================");
+        Serial.print("Duration: ");
+        Serial.print(elapsedSec / 60);
+        Serial.print(" min ");
+        Serial.print(elapsedSec % 60);
+        Serial.println(" sec");
+        Serial.println("Data logged to serial output");
+        Serial.println("========================================\n");
+        
+        sessionActive = false;
+    }
 }
 
 // BLE CALLBACKS FOR WRITEABLE CHARACTERISTICS
@@ -205,9 +293,19 @@ class ControlCallbacks : public BLECharacteristicCallbacks
         int pump = -1;
         if (sscanf(value.c_str(), "%d,%d,%d", &mode, &mist, &pump) == 3)
         {
+            // Check if mode is changing
+            bool modeChanging = (autoMode != (mode == 0));
+            
+            // Print session summary before mode change
+            if (modeChanging)
+            {
+                printSessionSummary();
+            }
+            
             autoMode = (mode == 0);
             mistManualOn = (mist == 1);
             pumpManualOn = (pump == 1);
+            
             Serial.print("Control updated: mode=");
             Serial.print(autoMode ? "AUTO" : "MANUAL");
             Serial.print(" mist=");
@@ -231,8 +329,6 @@ class ThreshCallbacks : public BLECharacteristicCallbacks
         float humidHighThresh = humidity_high_threshold;
         int soilThresh = soil_threshold;
         
-        // Parse: "tempHighThresh,humidLowThresh,humidHighThresh,soilThresh"
-        // Format: "27,50,70,2416" -> temp>27=ON, H<50=ON, H>70=OFF
         int parsed = sscanf(value.c_str(), "%f,%f,%f,%d", &tempThresh, &humidLowThresh, &humidHighThresh, &soilThresh);
         
         if (parsed >= 3)
@@ -243,7 +339,6 @@ class ThreshCallbacks : public BLECharacteristicCallbacks
                 humidity_high_threshold = humidHighThresh;
                 soil_threshold = soilThresh;
             } else if (parsed == 3) {
-                // Legacy format: third value is humidity high threshold
                 humidity_high_threshold = humidHighThresh;
             }
             Serial.print("Thresholds: T>");
@@ -278,22 +373,24 @@ void setup()
 {
     Serial.begin(115200);
     delay(300);
-    Serial.println("\nGreenhouse Monitor booting...");
+    Serial.println("\n========================================");
+    Serial.println("GREENHOUSE MONITORING SYSTEM");
+    Serial.println("========================================");
+    Serial.println("Data logging started...");
+    Serial.println("Mode will be logged as: 0=AUTO, 1=MANUAL");
+    Serial.println("========================================\n");
     
     // Initialize DHT sensor first
     dht.begin();
     pinMode(SOIL_SENSOR_PIN, INPUT);
     pinMode(BATTERY_ADC_PIN, INPUT);
     
-    // CRITICAL: Initialize MOSFET pins with EXPLICIT OFF state
-    // N-channel MOSFET: Gate LOW = OFF, Gate HIGH = ON
-    // Set LOW first to ensure OFF, then configure as output
-    digitalWrite(MIST_PIN, LOW);   // MOSFET OFF
-    digitalWrite(PUMP_PIN, LOW);   // MOSFET OFF
+    // Initialize MOSFET pins
+    digitalWrite(MIST_PIN, LOW);
+    digitalWrite(PUMP_PIN, LOW);
     pinMode(MIST_PIN, OUTPUT);
     pinMode(PUMP_PIN, OUTPUT);
     
-    // Small delay to let MOSFETs settle
     delay(100);
     Serial.println("MOSFETs initialized OFF (N-channel, active-HIGH)");
 
@@ -321,7 +418,7 @@ void setup()
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
     pThreshCharacteristic->addDescriptor(new BLE2902());
     pThreshCharacteristic->setCallbacks(new ThreshCallbacks());
-    pThreshCharacteristic->setValue("27.0,50.0,70.0,2416");  // tempHigh,humidLow,humidHigh,soil
+    pThreshCharacteristic->setValue("27.0,50.0,70.0,2416");
 
     pService->start();
     
@@ -334,11 +431,10 @@ void setup()
     
     startBleAdvertising();
     
-    // Initial battery reading
     batteryVoltage = readBatteryVoltage();
     
     renderDisplay(0, 0, 0, false, false);
-    Serial.println("Greenhouse Monitor ready!");
+    Serial.println("System ready! Starting data collection...\n");
     delay(2000);
 }
 
@@ -346,82 +442,62 @@ void loop()
 {
     unsigned long currentMillis = millis();
     
-    // Read temperature and humidity from DHT11 sensor
+    // Read sensors
     float humidityRaw = dht.readHumidity();
     float temperatureRaw = dht.readTemperature();
     updateDhtAverages(temperatureRaw, humidityRaw, temperatureAverage, humidityAverage);
     float humidity = humidityAverage;
     float temperature = temperatureAverage;
 
-    // Read soil moisture sensor
     int soilMoistureValue = readSoilMoistureAverage();
-    
-    // Read battery voltage
     batteryVoltage = readBatteryVoltage();
 
-    // BLE notification every 1 minute
+    // BLE notification
     if (deviceConnected && (currentMillis - lastBleNotifyTime >= BLE_NOTIFY_INTERVAL_MS))
     {
         lastBleNotifyTime = currentMillis;
         
-        // Send sensor data: "temp,humid,soil,batteryV"
         char sensorString[32];
         snprintf(sensorString, sizeof(sensorString), "%.1f,%.1f,%d,%.1f",
-                 temperature,
-                 humidity,
-                 soilMoistureValue,
-                 batteryVoltage);
+                 temperature, humidity, soilMoistureValue, batteryVoltage);
         pSensorCharacteristic->setValue(sensorString);
         pSensorCharacteristic->notify();
         
-        // Send current control values: "mode,mist_actual,pump_actual"
-        // This sends the ACTUAL state of the actuators, not just manual commands
         bool mistActual = false;
         bool pumpActual = false;
         
         if (autoMode) {
-            // In AUTO mode, actuators are controlled by thresholds
-            // NEW LOGIC:
-            // Mist ON if: temp < threshold (cooling) OR humidity < low_threshold
-            // Mist OFF if: humidity > high_threshold (80%)
             bool mistShouldBeOn = (temperature > temp_high_threshold) || (humidity < humidity_low_threshold);
-            // But turn OFF if humidity is too high (above 80%)
             if (humidity > humidity_high_threshold) {
                 mistShouldBeOn = false;
             }
             mistActual = mistShouldBeOn;
             pumpActual = (soilMoistureValue > soil_threshold);
         } else {
-            // In MANUAL mode, actuators are controlled by dashboard
             mistActual = mistManualOn;
             pumpActual = pumpManualOn;
         }
         
         char controlString[10];
         snprintf(controlString, sizeof(controlString), "%d,%d,%d",
-                 autoMode ? 0 : 1,
-                 mistActual ? 1 : 0,
-                 pumpActual ? 1 : 0);
+                 autoMode ? 0 : 1, mistActual ? 1 : 0, pumpActual ? 1 : 0);
         pControlCharacteristic->setValue(controlString);
-        pControlCharacteristic->notify();  // Notify the control values
+        pControlCharacteristic->notify();
 
-        // Send threshold values: "tempThresh,humidLowThresh,humidHighThresh,soilThresh"
         char threshString[32];
         snprintf(threshString, sizeof(threshString), "%.1f,%.1f,%.1f,%d",
-             temp_high_threshold,
-             humidity_low_threshold,
-             humidity_high_threshold,
-             soil_threshold);
+             temp_high_threshold, humidity_low_threshold, humidity_high_threshold, soil_threshold);
         pThreshCharacteristic->setValue(threshString);
-        pThreshCharacteristic->notify();  // Notify the threshold values
+        pThreshCharacteristic->notify();
         
-        Serial.print("BLE notify: ");
+        Serial.print("BLE: ");
         Serial.print(sensorString);
-        Serial.print(" | Control: ");
-        Serial.print(controlString);
-        Serial.print(" | Battery: ");
-        Serial.print(batteryVoltage, 2);
-        Serial.println("V");
+        Serial.print(" | Mode: ");
+        Serial.print(autoMode ? "AUTO" : "MAN");
+        Serial.print(" | M:");
+        Serial.print(mistActual ? "1" : "0");
+        Serial.print(" P:");
+        Serial.println(pumpActual ? "1" : "0");
     }
 
     // Handle BLE disconnection/reconnection
@@ -436,7 +512,7 @@ void loop()
     if (deviceConnected && !oldDeviceConnected)
     {
         oldDeviceConnected = deviceConnected;
-        lastBleNotifyTime = currentMillis; // Reset timer on new connection
+        lastBleNotifyTime = currentMillis;
         Serial.println("BLE connected");
     }
 
@@ -446,67 +522,62 @@ void loop()
     
     if (autoMode)
     {
-        // AUTOMATIC MODE - Control based on thresholds
-        // NEW LOGIC:
-        // Mist ON if: temp < threshold (cooling) OR humidity < low_threshold
-        // Mist OFF if: humidity > high_threshold (80%)
         bool mistShouldBeOn = (temperature > temp_high_threshold) || (humidity < humidity_low_threshold);
-        // But turn OFF if humidity is too high (above 80%)
         if (humidity > humidity_high_threshold) {
             mistShouldBeOn = false;
         }
         
         if (mistShouldBeOn)
         {
-            digitalWrite(MIST_PIN, HIGH);  // N-channel MOSFET: HIGH = ON
+            digitalWrite(MIST_PIN, HIGH);
             mistOn = true;
-            Serial.println("MIST ON (temp < threshold OR humidity < low, and humidity not too high)");
         }
         else
         {
-            digitalWrite(MIST_PIN, LOW);   // N-channel MOSFET: LOW = OFF
+            digitalWrite(MIST_PIN, LOW);
             mistOn = false;
         }
 
         if (soilMoistureValue > soil_threshold)
         {
-            digitalWrite(PUMP_PIN, HIGH);  // N-channel MOSFET: HIGH = ON
+            digitalWrite(PUMP_PIN, HIGH);
             pumpOn = true;
         }
         else
         {
-            digitalWrite(PUMP_PIN, LOW);   // N-channel MOSFET: LOW = OFF
+            digitalWrite(PUMP_PIN, LOW);
             pumpOn = false;
         }
     }
     else
     {
-        // MANUAL MODE - Control from dashboard
         if (mistManualOn)
         {
-            digitalWrite(MIST_PIN, HIGH);  // N-channel MOSFET: HIGH = ON
+            digitalWrite(MIST_PIN, HIGH);
             mistOn = true;
         }
         else
         {
-            digitalWrite(MIST_PIN, LOW);   // N-channel MOSFET: LOW = OFF
+            digitalWrite(MIST_PIN, LOW);
             mistOn = false;
         }
 
         if (pumpManualOn)
         {
-            digitalWrite(PUMP_PIN, HIGH);  // N-channel MOSFET: HIGH = ON
+            digitalWrite(PUMP_PIN, HIGH);
             pumpOn = true;
         }
         else
         {
-            digitalWrite(PUMP_PIN, LOW);   // N-channel MOSFET: LOW = OFF
+            digitalWrite(PUMP_PIN, LOW);
             pumpOn = false;
         }
     }
     
+    // Log data to serial (CSV format)
+    logDataToSerial(temperature, humidity, soilMoistureValue, mistOn, pumpOn);
+    
     renderDisplay(temperature, humidity, soilMoistureValue, mistOn, pumpOn);
     
-    // Short delay for display update (not for BLE timing)
     delay(5000);
 }

@@ -14,6 +14,8 @@ Features:
 Author: Greenhouse Monitoring System
 """
 
+import os
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -89,7 +91,7 @@ def remove_outliers_iqr(df, columns, multiplier=1.5):
     return df_clean
 
 
-def remove_humidity_outliers(df, threshold=55):
+def remove_humidity_outliers(df, threshold=95):
     """Remove humidity spikes above threshold (DHT11 sensor errors)."""
     df_clean = df.copy()
     outlier_mask = df_clean['humidity'] > threshold
@@ -102,7 +104,7 @@ def remove_humidity_outliers(df, threshold=55):
     return df_clean
 
 
-def process_data(df, battery_filter=7.25):
+def process_data(df, battery_filter=7.25, humidity_spike_threshold=95):
     """Full data processing pipeline."""
     print("=" * 60)
     print("DATA PROCESSING")
@@ -115,7 +117,7 @@ def process_data(df, battery_filter=7.25):
     print(f"After removing NaN: {len(df_clean)} rows")
     
     # Remove humidity sensor errors (spikes above 55%)
-    df_clean = remove_humidity_outliers(df_clean, threshold=55)
+    df_clean = remove_humidity_outliers(df_clean, threshold=humidity_spike_threshold)
     
     # Remove statistical outliers
     outlier_cols = ['temperature', 'soil_moisture', 'battery_voltage']
@@ -207,14 +209,13 @@ def calculate_correlations(df):
 # FIGURE GENERATION
 # ============================================================================
 
-def create_output_directory():
+def create_output_directory(output_dir):
     """Create figures output directory."""
-    import os
-    os.makedirs('figures', exist_ok=True)
-    print("\nFigures will be saved to: figures/")
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\nFigures will be saved to: {output_dir}/")
 
 
-def fig1_sensor_time_series(df):
+def fig1_sensor_time_series(df, output_dir):
     """
     Figure 1: Environmental Parameters Over Time
     Shows temperature, humidity, and soil moisture trends.
@@ -260,13 +261,13 @@ def fig1_sensor_time_series(df):
     ax3.set_xlabel('Time')
     
     plt.tight_layout()
-    plt.savefig('figures/fig1_sensor_time_series.png')
-    plt.savefig('figures/fig1_sensor_time_series.pdf')
+    plt.savefig(os.path.join(output_dir, 'fig1_sensor_time_series.png'))
+    plt.savefig(os.path.join(output_dir, 'fig1_sensor_time_series.pdf'))
     plt.close()
     print("  ✓ Figure 1: Sensor time series")
 
 
-def fig2_control_system_validation(df):
+def fig2_control_system_validation(df, output_dir):
     """
     Figure 2: Control System Validation
     Shows how actuators respond to threshold conditions.
@@ -333,13 +334,13 @@ def fig2_control_system_validation(df):
     ax4.legend()
     
     plt.tight_layout()
-    plt.savefig('figures/fig2_control_validation.png')
-    plt.savefig('figures/fig2_control_validation.pdf')
+    plt.savefig(os.path.join(output_dir, 'fig2_control_validation.png'))
+    plt.savefig(os.path.join(output_dir, 'fig2_control_validation.pdf'))
     plt.close()
     print("  ✓ Figure 2: Control system validation")
 
 
-def fig3_correlation_analysis(df):
+def fig3_correlation_analysis(df, output_dir):
     """
     Figure 3: Correlation Analysis
     Shows relationships between parameters.
@@ -398,13 +399,13 @@ def fig3_correlation_analysis(df):
     plt.colorbar(im, ax=ax4, label='Correlation Coefficient')
     
     plt.tight_layout()
-    plt.savefig('figures/fig3_correlation_analysis.png')
-    plt.savefig('figures/fig3_correlation_analysis.pdf')
+    plt.savefig(os.path.join(output_dir, 'fig3_correlation_analysis.png'))
+    plt.savefig(os.path.join(output_dir, 'fig3_correlation_analysis.pdf'))
     plt.close()
     print("  ✓ Figure 3: Correlation analysis")
 
 
-def fig4_distribution_analysis(df):
+def fig4_distribution_analysis(df, output_dir):
     """
     Figure 4: Parameter Distributions
     Shows distribution of each measured parameter.
@@ -456,13 +457,13 @@ def fig4_distribution_analysis(df):
     ax4.legend()
     
     plt.tight_layout()
-    plt.savefig('figures/fig4_distribution_analysis.png')
-    plt.savefig('figures/fig4_distribution_analysis.pdf')
+    plt.savefig(os.path.join(output_dir, 'fig4_distribution_analysis.png'))
+    plt.savefig(os.path.join(output_dir, 'fig4_distribution_analysis.pdf'))
     plt.close()
     print("  ✓ Figure 4: Distribution analysis")
 
 
-def fig5_system_performance_summary(df, stats_dict):
+def fig5_system_performance_summary(df, stats_dict, output_dir):
     """
     Figure 5: System Performance Summary Table
     Creates a publication-ready summary table.
@@ -512,13 +513,13 @@ def fig5_system_performance_summary(df, stats_dict):
     ax.set_title('Table 1: Greenhouse Monitoring System Performance Summary\n', fontsize=14, fontweight='bold')
     
     plt.tight_layout()
-    plt.savefig('figures/fig5_performance_summary.png', bbox_inches='tight', dpi=300)
-    plt.savefig('figures/fig5_performance_summary.pdf', bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, 'fig5_performance_summary.png'), bbox_inches='tight', dpi=300)
+    plt.savefig(os.path.join(output_dir, 'fig5_performance_summary.pdf'), bbox_inches='tight')
     plt.close()
     print("  ✓ Figure 5: Performance summary table")
 
 
-def fig6_control_effectiveness(df):
+def fig6_control_effectiveness(df, output_dir):
     """
     Figure 6: Control System Effectiveness
     Shows how well the system maintains conditions.
@@ -568,13 +569,13 @@ def fig6_control_effectiveness(df):
     ax3.set_title(f'(c) Soil Moisture\n(Pump Active: {soil_pct:.1f}%)')
     
     plt.tight_layout()
-    plt.savefig('figures/fig6_control_effectiveness.png')
-    plt.savefig('figures/fig6_control_effectiveness.pdf')
+    plt.savefig(os.path.join(output_dir, 'fig6_control_effectiveness.png'))
+    plt.savefig(os.path.join(output_dir, 'fig6_control_effectiveness.pdf'))
     plt.close()
     print("  ✓ Figure 6: Control system effectiveness")
 
 
-def generate_latex_table(stats_dict):
+def generate_latex_table(stats_dict, output_dir):
     """Generate LaTeX formatted table for paper."""
     latex_code = r"""
 \begin{table}[h]
@@ -594,52 +595,61 @@ Battery Voltage (V) & """ + f"{stats_dict['battery_voltage']['mean']:.2f}" + r""
 \end{table}
 """
     
-    with open('figures/table_performance.tex', 'w') as f:
+    with open(os.path.join(output_dir, 'table_performance.tex'), 'w') as f:
         f.write(latex_code)
     
-    print("  ✓ LaTeX table saved to: figures/table_performance.tex")
+    print(f"  ✓ LaTeX table saved to: {output_dir}/table_performance.tex")
 
 
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
 
-def main():
+def main(filepath='greenhouse_complete_log.csv', output_dir='figures', battery_filter=7.25,
+         humidity_spike_threshold=95):
     """Main analysis pipeline."""
     print("\n" + "=" * 60)
     print("GREENHOUSE MONITORING DATA ANALYSIS")
     print("=" * 60)
     
     # Load and process data
-    df_raw = load_and_clean_data('greenhouse_complete_log.csv')
-    df_clean = process_data(df_raw, battery_filter=7.25)
+    df_raw = load_and_clean_data(filepath)
+    df_clean = process_data(
+        df_raw,
+        battery_filter=battery_filter,
+        humidity_spike_threshold=humidity_spike_threshold,
+    )
+
+    if df_clean.empty:
+        print("\nNo valid rows after cleaning. Adjust filters and re-run.")
+        return df_clean, {}
     
     # Generate statistics
     stats_dict = generate_statistics(df_clean)
     corr_matrix = calculate_correlations(df_clean)
     
     # Create output directory
-    create_output_directory()
+    create_output_directory(output_dir)
     
     print("\n" + "=" * 60)
     print("GENERATING FIGURES")
     print("=" * 60)
     
     # Generate all figures
-    fig1_sensor_time_series(df_clean)
-    fig2_control_system_validation(df_clean)
-    fig3_correlation_analysis(df_clean)
-    fig4_distribution_analysis(df_clean)
-    fig5_system_performance_summary(df_clean, stats_dict)
-    fig6_control_effectiveness(df_clean)
+    fig1_sensor_time_series(df_clean, output_dir)
+    fig2_control_system_validation(df_clean, output_dir)
+    fig3_correlation_analysis(df_clean, output_dir)
+    fig4_distribution_analysis(df_clean, output_dir)
+    fig5_system_performance_summary(df_clean, stats_dict, output_dir)
+    fig6_control_effectiveness(df_clean, output_dir)
     
     # Generate LaTeX table
-    generate_latex_table(stats_dict)
+    generate_latex_table(stats_dict, output_dir)
     
     print("\n" + "=" * 60)
     print("ANALYSIS COMPLETE")
     print("=" * 60)
-    print(f"\nGenerated 6 publication-quality figures in 'figures/' directory")
+    print(f"\nGenerated 6 publication-quality figures in '{output_dir}/' directory")
     print("  - fig1_sensor_time_series.png/pdf")
     print("  - fig2_control_validation.png/pdf")
     print("  - fig3_correlation_analysis.png/pdf")
@@ -652,4 +662,13 @@ def main():
 
 
 if __name__ == "__main__":
-    df, stats = main()
+    if len(sys.argv) >= 3:
+        auto_path = sys.argv[1]
+        manual_path = sys.argv[2]
+        print("\n=== AUTO DATASET ===")
+        main(auto_path, output_dir=os.path.join('figures', 'auto'))
+        print("\n=== MANUAL DATASET ===")
+        main(manual_path, output_dir=os.path.join('figures', 'manual'))
+    else:
+        csv_path = sys.argv[1] if len(sys.argv) > 1 else 'greenhouse_complete_log.csv'
+        main(csv_path)
